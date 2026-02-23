@@ -1,0 +1,11 @@
+# Web Framework
+Flask>=3.0.0
+Werkzeug>=3.0.0
+
+# Packet Sniffing & Networking
+scapy>=2.5.0
+ipwhois>=1.2.0
+
+# Machine Learning & Data Processing
+pandas>=2.1.0
+scikit-learn>=1.3.0

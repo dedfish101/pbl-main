@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Lil Log | Native Packet Capture</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 font-mono p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <div class="flex flex-col md:row justify-between items-center mb-8 gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-emerald-400 tracking-tighter uppercase">NIDS Engine</h1>
+                <p class="text-slate-500 text-xs italic">Native Packet Capture & Behavioral Analysis</p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 p-4 rounded-xl h-48">
+                <canvas id="trafficChart"></canvas>
+            </div>
+            
+            <div class="flex flex-col gap-4">
+                <div class="bg-slate-800 border border-slate-700 p-4 rounded-lg text-center h-full flex flex-col justify-center">
+                    <div class="text-[10px] text-slate-500 uppercase font-bold">Session Volume</div>
+                    <div id="total-bytes" class="text-3xl font-bold text-blue-400">0.00 MB</div>
+                </div>
+                <div class="bg-slate-800 border border-slate-700 p-4 rounded-lg text-center h-full flex flex-col justify-center">
+                    <div class="text-[10px] text-slate-500 uppercase font-bold">Discovered Nodes</div>
+                    <div id="active-nodes" class="text-3xl font-bold text-emerald-400">0</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-slate-800 rounded-xl shadow-2xl border border-slate-700 overflow-hidden">
+            <table class="w-full text-left border-collapse">
+                <thead class="bg-slate-700/50 text-[10px] uppercase tracking-widest text-slate-400">
+                    <tr>
+                        <th class="p-4">Owner / Hostname</th>
+                        <th class="p-4">IP Address</th>
+                        <th class="p-4">Protocol</th>
+                        <th class="p-4">Service</th>
+                        <th class="p-4 text-right">In / Out</th>
+                        <th class="p-4 text-right">Data / Speed</th>
+                    </tr>
+                </thead>
+                <tbody id="stats-table" class="text-sm divide-y divide-slate-700">
+                    <tr><td colspan="6" class="p-8 text-center text-slate-500 animate-pulse text-lg">Initializing Capture System...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+    // 1. Initialize Chart.js with Behavioral Dataset
+    const ctx = document.getElementById('trafficChart').getContext('2d');
+    const trafficChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Throughput (KB/s)',
+                data: [],
+                borderColor: '#10b981',
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { display: false },
+                y: { 
+                    grid: { color: '#334155' }, 
+                    ticks: { color: '#94a3b8' },
+                    beginAtZero: true 
+                }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+
+    async function updateUI() {
+        try {
+            const response = await fetch('/api/stats');
+            const result = await response.json();
+            const devices = result.data || {};
+            
+            // Update Stats
+            const nodeCount = result.count || Object.keys(devices).length;
+            document.getElementById('active-nodes').innerText = nodeCount;
+            document.getElementById('total-bytes').innerText = `${result.total_session_volume_mb || 0} MB`;
+
+            // 2. Behavioral Graph Update
+            const now = new Date().toLocaleTimeString();
+            const currentSpeed = Object.values(devices).reduce((acc, curr) => acc + (curr.kb_per_sec || 0), 0);
+            
+            trafficChart.data.labels.push(now);
+            trafficChart.data.datasets[0].data.push(currentSpeed);
+            
+            if (trafficChart.data.labels.length > 20) {
+                trafficChart.data.labels.shift();
+                trafficChart.data.datasets[0].data.shift();
+            }
+            trafficChart.update('none');
+
+            // 3. Render Table
+            const statsTable = document.getElementById('stats-table');
+            let tableContent = '';
+            const sorted = Object.entries(devices).sort((a, b) => (b[1].bytes || 0) - (a[1].bytes || 0));
+
+            for (const [ip, stats] of sorted) {
+                tableContent += `
+                    <tr class="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
+                        <td class="p-4 font-bold text-blue-300 truncate max-w-xs">${stats.hostname || 'Unknown'}</td>
+                        <td class="p-4 text-slate-500 text-xs">${ip}</td>
+                        <td class="p-4"><span class="text-[10px] bg-slate-900 text-emerald-400 px-2 py-1 rounded border border-emerald-500/20 uppercase font-bold">${stats.protocol || '---'}</span></td>
+                        <td class="p-4 text-slate-400 text-xs uppercase">${stats.service || '---'}</td>
+                        <td class="p-4 text-right text-emerald-500">${stats.in || 0} <span class="text-slate-700">/</span> <span class="text-orange-400">${stats.out || 0}</span></td>
+                        <td class="p-4 text-right">
+                            <div class="font-mono text-slate-300">${((stats.bytes || 0) / 1024).toFixed(1)} KB</div>
+                            <div class="text-[10px] text-blue-400 font-bold">${stats.kb_per_sec || 0} KB/s</div>
+                        </td>
+                    </tr>
+                `;
+            }
+            statsTable.innerHTML = tableContent;
+        } catch (err) { console.error("UI Update Failed:", err); }
+    }
+
+    setInterval(updateUI, 2000);
+    updateUI();
+</script>
+</body>
+</html>
