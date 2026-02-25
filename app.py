@@ -2,12 +2,15 @@ import time
 import threading
 import socket
 from flask import Flask, render_template, jsonify
-from scapy.all import sniff, IP, DNS, DNSRR, get_working_ifaces, IPv6, UDP
+from scapy.all import sniff, IP, DNS, DNSRR, get_working_ifaces, IPv6, UDP, get_if_hwaddr
 from scapy.all import conf
 from scapy.arch.windows import get_windows_if_list
 from scapy.all import IPv6, TCP
 from ipwhois import IPWhois
+import csv
+import os
 
+DATASET_FILE = "nids_training_data.csv"
 
 app = Flask(__name__)
 
@@ -15,6 +18,11 @@ network_stats = {}
 dns_table = {}
 whois_cache = {}
 bandwidth_log = {}
+
+try:
+    my_mac = get_if_hwaddr(conf.ifaces.dev_from_index(11)) # Use your Wi-Fi index
+except:
+    my_mac = "00:00:00:00:00:00"
 
 # ROBUST IP DETECTION
 def get_internal_ip():
@@ -72,40 +80,59 @@ def get_service_name(port, proto="tcp"):
         return f"Port {port}" # Fallback to just showing the port number
 
 def process_packet(pkt):
+    # --- MAC-BASED OUTBOUND DETECTION ---
+    # If the source MAC is yours, the packet is leaving your PC (Outbound)
+    is_outbound = False
+    if pkt.src == my_mac:
+        is_outbound = True
+
+    # Identify the IP layer (v4 or v6)
     ip_layer = pkt[IP] if IP in pkt else (pkt[IPv6] if IPv6 in pkt else None)
     
     if ip_layer:
         src, dst = ip_layer.src, ip_layer.dst
-        target_ip = dst if src == my_ip else src
         
-        if target_ip != my_ip:
-            if target_ip not in network_stats:
-                # Backend initialization with more "features"
-                network_stats[target_ip] = {
-                    "hostname": target_ip,
-                    "in": 0, "out": 0,
-                    "bytes": 0,
-                    "last_seen": time.time(),
-                    "protocol": "TCP" if TCP in pkt else "UDP" if UDP in pkt else "Other"
-                }
-                threading.Thread(target=async_whois_lookup, args=(target_ip,), daemon=True).start()
-            
-            if pkt.haslayer(TCP):
-                # Use the destination port to identify the service
-                service = get_service_name(pkt[TCP].dport, "tcp")
-                network_stats[target_ip]["service"] = service
-                network_stats[target_ip]["protocol"] = "TCP"
-            elif pkt.haslayer(UDP):
-                service = get_service_name(pkt[UDP].dport, "udp")
-                network_stats[target_ip]["service"] = service
-                network_stats[target_ip]["protocol"] = "UDP"
+        # If outbound, we track the destination (where you are talking to)
+        # If inbound, we track the source (who is talking to you)
+        target_ip = dst if is_outbound else src
+        
+        # Skip internal traffic (your PC talking to itself)
+        if target_ip == my_ip or target_ip == "127.0.0.1" or target_ip == "::1":
+            return
 
-            # Mechanical updates
-            network_stats[target_ip]["bytes"] += len(pkt)
-            network_stats[target_ip]["last_seen"] = time.time()
-            
-            direction = "out" if src == my_ip else "in"
-            network_stats[target_ip][direction] += 1
+        now = time.time()
+        
+        # Initialize stats for new IPs
+        if target_ip not in network_stats:
+            network_stats[target_ip] = {
+                "hostname": target_ip,
+                "in": 0, "out": 0, "bytes": 0,
+                "last_seen": now,
+                "protocol": "TCP" if TCP in pkt else "UDP" if UDP in pkt else "Other",
+                "packet_times": [],
+                "avg_iat": 0,
+                "last_packet_time": now
+            }
+            threading.Thread(target=async_whois_lookup, args=(target_ip,), daemon=True).start()
+        
+        # Update Behavioral Timing (IAT)
+        iat = now - network_stats[target_ip]["last_packet_time"]
+        network_stats[target_ip]["packet_times"].append(iat)
+        if len(network_stats[target_ip]["packet_times"]) > 20:
+            network_stats[target_ip]["packet_times"].pop(0)
+        
+        network_stats[target_ip]["avg_iat"] = sum(network_stats[target_ip]["packet_times"]) / len(network_stats[target_ip]["packet_times"])
+        network_stats[target_ip]["last_packet_time"] = now
+
+        # Update Byte Counts and Directions
+        network_stats[target_ip]["bytes"] += len(pkt)
+        network_stats[target_ip]["last_seen"] = now
+        
+        direction = "out" if is_outbound else "in"
+        network_stats[target_ip][direction] += 1
+        
+        # Run anomaly checks
+        check_anomalies(target_ip, pkt)
 
 def start_sniffing():
     # This will print all Windows interfaces so you can find the right one
@@ -115,8 +142,9 @@ def start_sniffing():
 
     # CHANGE THIS: Use the Index number of your Wi-Fi card (usually 1, 2, or 3)
     # If your Wi-Fi is Index 5, change it to iface=conf.ifaces.dev_from_index(5)
-    print("[*] Starting Sniffer on default interface...")
-    sniff(prn=process_packet, store=False)
+    target_iface = conf.ifaces.dev_from_index(11) 
+    print(f"[*] Starting Sniffer on {target_iface}...")
+    sniff(iface=target_iface, prn=process_packet, store=False)
 
 def calculate_rates():
     """Background task to update KB/s for every IP."""
@@ -148,6 +176,27 @@ def check_anomalies(target_ip, pkt):
         if "Large Packets" not in network_stats[target_ip]["flags"]:
             network_stats[target_ip]["flags"].append("Large Payload")
 
+def save_to_dataset(ip, stats, label):
+    file_exists = os.path.isfile(DATASET_FILE)
+    proto_map = {"TCP": 1, "UDP": 2, "Other": 0}
+    
+    features = {
+        "ip_address": ip,
+        "total_in": stats["in"],
+        "total_out": stats["out"],
+        "total_bytes": stats["bytes"],
+        "kb_per_sec": stats.get("kb_per_sec", 0),
+        "avg_iat": stats.get("avg_iat", 0), # CRITICAL FOR ML
+        "protocol": proto_map.get(stats["protocol"], 0),
+        "is_malicious": label 
+    }
+
+    with open(DATASET_FILE, mode='a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=features.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(features)
+
 
 @app.route('/')
 def index():
@@ -173,6 +222,20 @@ def get_stats():
         "count": len(network_stats), # This is the active node count
         "data": network_stats})
 
+@app.route('/api/save_training/<int:label>')
+def save_training(label):
+    """
+    Call this with /api/save_training/0 for Normal
+    Call this with /api/save_training/1 for Attack (Kali)
+    """
+    count = 0
+    for ip, stats in network_stats.items():
+        # Only log devices that have seen recent traffic
+        if time.time() - stats['last_seen'] < 60:
+            save_to_dataset(ip, stats, label)
+            count += 1
+    return jsonify({"status": "Success", "logged_nodes": count, "mode": "Malicious" if label else "Normal"})
+
 
 if __name__ == '__main__':
     # 1. Start the native packet capture (Blue Team engine)
@@ -186,3 +249,4 @@ if __name__ == '__main__':
     
     # 3. Run the Flask API
     app.run(debug=True, port=5000, use_reloader=False)
+

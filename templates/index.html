@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Lil Log | Native Packet Capture</title>
+    <title>NIDS Engine | Behavioral Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -16,8 +16,17 @@
             </div>
         </div>
 
+        <div class="flex gap-4 mb-6">
+            <button onclick="saveData(0)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-lg text-xs font-bold uppercase tracking-widest transition-all shadow-lg hover:shadow-emerald-500/20">
+                Record Normal Baseline
+            </button>
+            <button onclick="saveData(1)" class="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg text-xs font-bold uppercase tracking-widest transition-all shadow-lg hover:shadow-red-500/20">
+                Record Attack Pattern
+            </button>
+        </div>
+
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 p-4 rounded-xl h-48">
+            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 p-4 rounded-xl h-64">
                 <canvas id="trafficChart"></canvas>
             </div>
             
@@ -27,7 +36,7 @@
                     <div id="total-bytes" class="text-3xl font-bold text-blue-400">0.00 MB</div>
                 </div>
                 <div class="bg-slate-800 border border-slate-700 p-4 rounded-lg text-center h-full flex flex-col justify-center">
-                    <div class="text-[10px] text-slate-500 uppercase font-bold">Discovered Nodes</div>
+                    <div class="text-[10px] text-slate-500 uppercase font-bold">Active Nodes</div>
                     <div id="active-nodes" class="text-3xl font-bold text-emerald-400">0</div>
                 </div>
             </div>
@@ -41,7 +50,7 @@
                         <th class="p-4">IP Address</th>
                         <th class="p-4">Protocol</th>
                         <th class="p-4">Service</th>
-                        <th class="p-4 text-right">In / Out</th>
+                        <th class="p-4 text-right">In / Out (Pkts)</th>
                         <th class="p-4 text-right">Data / Speed</th>
                     </tr>
                 </thead>
@@ -53,14 +62,14 @@
     </div>
 
     <script>
-    // 1. Initialize Chart.js with Behavioral Dataset
+    // 1. Initialize Chart.js
     const ctx = document.getElementById('trafficChart').getContext('2d');
     const trafficChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: [],
             datasets: [{
-                label: 'Throughput (KB/s)',
+                label: 'Global Throughput (KB/s)',
                 data: [],
                 borderColor: '#10b981',
                 backgroundColor: 'rgba(16, 185, 129, 0.1)',
@@ -85,23 +94,23 @@
         }
     });
 
+    // 2. Fetch and Update UI Logic
     async function updateUI() {
         try {
             const response = await fetch('/api/stats');
             const result = await response.json();
             const devices = result.data || {};
             
-            // Update Stats
-            const nodeCount = result.count || Object.keys(devices).length;
-            document.getElementById('active-nodes').innerText = nodeCount;
-            document.getElementById('total-bytes').innerText = `${result.total_session_volume_mb || 0} MB`;
+            // Update Global Metrics
+            document.getElementById('active-nodes').innerText = result.count || 0;
+            document.getElementById('total-bytes').innerText = `${result.total_session_volume_mb.toFixed(2)} MB`;
 
-            // 2. Behavioral Graph Update
+            // Behavioral Graph Update
             const now = new Date().toLocaleTimeString();
-            const currentSpeed = Object.values(devices).reduce((acc, curr) => acc + (curr.kb_per_sec || 0), 0);
+            const currentTotalSpeed = Object.values(devices).reduce((acc, curr) => acc + (curr.kb_per_sec || 0), 0);
             
             trafficChart.data.labels.push(now);
-            trafficChart.data.datasets[0].data.push(currentSpeed);
+            trafficChart.data.datasets[0].data.push(currentTotalSpeed);
             
             if (trafficChart.data.labels.length > 20) {
                 trafficChart.data.labels.shift();
@@ -109,32 +118,49 @@
             }
             trafficChart.update('none');
 
-            // 3. Render Table
+            // Render Table Rows
             const statsTable = document.getElementById('stats-table');
             let tableContent = '';
+            
+            // Sort by data volume (most active at top)
             const sorted = Object.entries(devices).sort((a, b) => (b[1].bytes || 0) - (a[1].bytes || 0));
 
-            for (const [ip, stats] of sorted) {
-                tableContent += `
-                    <tr class="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-                        <td class="p-4 font-bold text-blue-300 truncate max-w-xs">${stats.hostname || 'Unknown'}</td>
-                        <td class="p-4 text-slate-500 text-xs">${ip}</td>
-                        <td class="p-4"><span class="text-[10px] bg-slate-900 text-emerald-400 px-2 py-1 rounded border border-emerald-500/20 uppercase font-bold">${stats.protocol || '---'}</span></td>
-                        <td class="p-4 text-slate-400 text-xs uppercase">${stats.service || '---'}</td>
-                        <td class="p-4 text-right text-emerald-500">${stats.in || 0} <span class="text-slate-700">/</span> <span class="text-orange-400">${stats.out || 0}</span></td>
-                        <td class="p-4 text-right">
-                            <div class="font-mono text-slate-300">${((stats.bytes || 0) / 1024).toFixed(1)} KB</div>
-                            <div class="text-[10px] text-blue-400 font-bold">${stats.kb_per_sec || 0} KB/s</div>
-                        </td>
-                    </tr>
-                `;
+            if (sorted.length === 0) {
+                tableContent = '<tr><td colspan="6" class="p-8 text-center text-slate-600 italic">No traffic detected on this interface...</td></tr>';
+            } else {
+                for (const [ip, stats] of sorted) {
+                    tableContent += `
+                        <tr class="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
+                            <td class="p-4 font-bold text-blue-300 truncate max-w-xs">${stats.hostname || 'Unknown Device'}</td>
+                            <td class="p-4 text-slate-500 text-xs">${ip}</td>
+                            <td class="p-4"><span class="text-[10px] bg-slate-900 text-emerald-400 px-2 py-1 rounded border border-emerald-500/20 uppercase font-bold">${stats.protocol || '---'}</span></td>
+                            <td class="p-4 text-slate-400 text-xs uppercase">${stats.service || '---'}</td>
+                            <td class="p-4 text-right text-emerald-500 font-mono">${stats.in || 0} <span class="text-slate-700">/</span> <span class="text-orange-400">${stats.out || 0}</span></td>
+                            <td class="p-4 text-right">
+                                <div class="font-mono text-slate-300">${((stats.bytes || 0) / 1024).toFixed(1)} KB</div>
+                                <div class="text-[10px] text-blue-400 font-bold">${stats.kb_per_sec || 0} KB/s</div>
+                            </td>
+                        </tr>
+                    `;
+                }
             }
             statsTable.innerHTML = tableContent;
-        } catch (err) { console.error("UI Update Failed:", err); }
+        } catch (err) { console.error("Critical: UI Update Failed", err); }
     }
 
+    // 3. ML Dataset Recording Function
+    async function saveData(label) {
+        try {
+            const resp = await fetch(`/api/save_training/${label}`);
+            const res = await resp.json();
+            // Using a non-blocking toast or simple alert
+            alert(`DATA LOGGED: ${res.logged_nodes} nodes saved in ${res.mode} mode.`);
+        } catch (err) { alert("Failed to save training data. Is the backend running?"); }
+    }
+
+    // Interval and initial call
     setInterval(updateUI, 2000);
     updateUI();
-</script>
+    </script>
 </body>
 </html>
