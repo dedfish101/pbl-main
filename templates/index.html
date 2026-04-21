@@ -428,17 +428,17 @@ async function fetchStats() {
     const res  = await fetch('/api/stats');
     const json = await res.json();
 
-    // Header bar
+    // 1. Updated Header bar — sync with backend key 'threat_flags'
     document.getElementById('hdr-status').textContent = json.status;
     document.getElementById('hdr-mb').textContent     = json.total_mb;
     document.getElementById('hdr-count').textContent  = json.count;
-    document.getElementById('hdr-flags').textContent  = json.threat_flags;
+    document.getElementById('hdr-flags').textContent  = json.threat_flags; // SYNCED
 
     // Stat cards
     document.getElementById('card-hosts').textContent = json.count;
     document.getElementById('card-mb').textContent    = json.total_mb;
 
-    // Threat gauge
+    // Threat gauge (Now dynamic based on last 60 seconds)
     updateThreatGauge(json.threat_level || 'green');
 
     // Protocol doughnut
@@ -467,21 +467,31 @@ async function fetchStats() {
         const hasFlags = s.flags && s.flags.length > 0;
         const rowBg    = hasFlags ? 'bg-red-950' : '';
         const iat      = s.avg_iat ? s.avg_iat.toFixed(4) + 's' : '—';
-        const verdict  = s.ai_verdict
-          ? `<span class="text-blue-300 italic" title="${escHtml(s.ai_verdict)}">${escHtml(s.ai_verdict.slice(0,40))}…</span>`
+        
+        // 2. Updated Verdict Logic — Handle the new 'Rate Limited' status visually
+        let verdictClass = "text-blue-300 italic";
+        let verdictText  = s.ai_verdict || 'Pending';
+        
+        if (verdictText.includes("Rate Limited")) {
+            verdictClass = "text-yellow-500 animate-pulse font-bold";
+        }
+
+        const verdictDisplay = s.ai_verdict
+          ? `<span class="${verdictClass}" title="${escHtml(s.ai_verdict)}">${escHtml(s.ai_verdict.slice(0,40))}…</span>`
           : '<span class="text-gray-700">Pending</span>';
+
         const hostname = (s.hostname && s.hostname !== ip)
           ? `<div class="text-gray-400 truncate max-w-[140px]" title="${s.hostname}">${s.hostname}</div>`
           : '';
 
         return `
-          <tr class="${rowBg} transition-colors duration-300">
+          <tr class="${rowBg} transition-colors duration-300 border-b border-gray-800">
             <td class="px-3 py-2">
-              <div class="text-cyan-300">${ip}</div>
+              <div class="text-cyan-300 font-bold">${ip}</div>
               ${hostname}
             </td>
             <td class="px-3 py-2">
-              <span class="px-1.5 py-0.5 rounded text-xs ${s.protocol === 'TCP' ? 'bg-cyan-900 text-cyan-300' : s.protocol === 'UDP' ? 'bg-purple-900 text-purple-300' : 'bg-gray-800 text-gray-400'}">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${s.protocol === 'TCP' ? 'bg-cyan-900 text-cyan-300' : s.protocol === 'UDP' ? 'bg-purple-900 text-purple-300' : 'bg-gray-800 text-gray-400'}">
                 ${s.protocol}
               </span>
             </td>
@@ -490,7 +500,7 @@ async function fetchStats() {
             <td class="px-3 py-2 text-right font-bold ${(s.kb_per_sec||0) > 800 ? 'text-red-400' : 'text-white'}">${s.kb_per_sec || '0'}</td>
             <td class="px-3 py-2 text-right text-gray-400">${iat}</td>
             <td class="px-3 py-2">${renderFlags(s.flags)}</td>
-            <td class="px-3 py-2 max-w-xs">${verdict}</td>
+            <td class="px-3 py-2 max-w-xs">${verdictDisplay}</td>
           </tr>`;
       }).join('');
     }

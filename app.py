@@ -10,11 +10,14 @@ from ipwhois import IPWhois
 import csv
 import os
 from groq import Groq
+from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-client = Groq(api_key="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")
+load_dotenv()
+api_key = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=api_key)
 DATASET_FILE = "nids_training_data.csv"
 SNIFF_IFACE_INDEX = 11          # MediaTek MT7921 Wi-Fi 6 — DO NOT CHANGE
 MAX_ALERTS = 150                 # Cap in-memory alert log
@@ -23,6 +26,24 @@ MAX_ALERTS = 150                 # Cap in-memory alert log
 # FLASK APP
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# AI lock 
+# ---------------------------------------------------------------------------
+ai_lock = threading.Lock() # Add this at the top with other globals
+
+def get_groq_analysis(ip):
+    # Only allow one AI request to happen at a time across the whole system
+    if not ai_lock.acquire(blocking=False):
+        return 
+
+    try:
+        stats = network_stats.get(ip)
+        # ... your existing Groq code ...
+    finally:
+        # Wait 3 seconds before allowing another AI request to prevent spam
+        time.sleep(3) 
+        ai_lock.release()
 
 # ---------------------------------------------------------------------------
 # GLOBAL STATE  (all dict mutations are GIL-protected; list.append is atomic)
@@ -253,31 +274,42 @@ def check_anomalies(target_ip, pkt):
 # GROQ AI ANALYSIS  (daemon thread — never blocks sniffer)
 # ---------------------------------------------------------------------------
 def get_groq_analysis(ip):
-    stats = network_stats.get(ip)
-    if not stats:
-        return
+    # Only allow one AI request to happen at a time across the whole system
+    if not ai_lock.acquire(blocking=False):
+        return 
 
     try:
+        stats = network_stats.get(ip)
+        if not stats:
+            return
+
         prompt = (
             f"Analyze network behavior for IP {ip}: "
             f"Protocol {stats['protocol']}, "
             f"Inbound packets {stats['in']}, Outbound packets {stats['out']}, "
-            f"Total bytes {stats['bytes']}, "
             f"Avg inter-arrival time {stats['avg_iat']:.6f}s, "
             f"Speed {stats.get('kb_per_sec', 0):.2f} KB/s, "
             f"Existing flags: {stats['flags']}. "
             f"Give a single-sentence security verdict."
         )
+        
         completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
         )
+        
         verdict = completion.choices[0].message.content.strip()
         stats["ai_verdict"] = verdict
         add_alert(ip, "info", f"[AI] {verdict[:140]}")
-    except Exception:
-        stats["ai_verdict"] = "AI Analysis Timeout"
-        add_alert(ip, "info", "[AI] Analysis timed out — Groq API unreachable")
+
+    except Exception as e:
+        stats["ai_verdict"] = "AI Analysis Rate Limited"
+        add_alert(ip, "info", "[AI] Rate limit hit — waiting for cool-down")
+    
+    finally:
+        # Wait 3 seconds before allowing another AI request to prevent API spam
+        time.sleep(3) 
+        ai_lock.release()
 
 # ---------------------------------------------------------------------------
 # TRAINING DATA PERSISTENCE
@@ -316,32 +348,42 @@ def get_stats():
     total_bytes = sum(d.get("bytes", 0) for d in list(network_stats.values()))
     total_mb    = round(total_bytes / (1024 * 1024), 2)
 
-    # Build protocol distribution counts
     proto_dist = {"TCP": 0, "UDP": 0, "Other": 0}
-    threat_flags_total = 0
+    
+    # NEW LOGIC: Track active threats only
+    active_threat_score = 0
+    current_time = time.time()
+
     for stats in list(network_stats.values()):
+        # 1. Update protocol distribution
         p = stats.get("protocol", "Other")
         proto_dist[p] = proto_dist.get(p, 0) + 1
-        threat_flags_total += len(stats.get("flags", []))
+        
+        # 2. Only count threats from hosts active in the last 60 seconds
+        if current_time - stats.get("last_seen", 0) < 60:
+            flags = stats.get("flags", [])
+            if "High Rate Flood" in flags:
+                active_threat_score += 3  # Critical
+            elif len(flags) > 0:
+                active_threat_score += 1  # Warning
 
-    # Compute overall threat level
-    if threat_flags_total == 0:
+    # Compute dynamic threat level
+    if active_threat_score == 0:
         threat_level = "green"
-    elif threat_flags_total <= 3:
+    elif active_threat_score < 3:
         threat_level = "yellow"
     else:
         threat_level = "red"
 
     return jsonify({
-        "status":        "Online",
-        "total_mb":      total_mb,
-        "count":         len(network_stats),
-        "proto_dist":    proto_dist,
-        "threat_level":  threat_level,
-        "threat_flags":  threat_flags_total,
-        "data":          dict(network_stats),   # snapshot copy for JSON safety
+        "status": "Online",
+        "total_mb": total_mb,
+        "count": len(network_stats),
+        "proto_dist": proto_dist,
+        "threat_level": threat_level,
+        "threat_flags": active_threat_score, # Matches the ID in index.html
+        "data": dict(network_stats),
     })
-
 
 @app.route('/api/alerts')
 def get_alerts():
