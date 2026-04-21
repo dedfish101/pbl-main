@@ -9,26 +9,42 @@ from scapy.all import IPv6, TCP
 from ipwhois import IPWhois
 import csv
 import os
+from groq import Groq
 
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
+client = Groq(api_key="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")
 DATASET_FILE = "nids_training_data.csv"
+SNIFF_IFACE_INDEX = 11          # MediaTek MT7921 Wi-Fi 6 — DO NOT CHANGE
+MAX_ALERTS = 150                 # Cap in-memory alert log
 
+# ---------------------------------------------------------------------------
+# FLASK APP
+# ---------------------------------------------------------------------------
 app = Flask(__name__)
 
-network_stats = {}
-dns_table = {}
-whois_cache = {}
-bandwidth_log = {}
+# ---------------------------------------------------------------------------
+# GLOBAL STATE  (all dict mutations are GIL-protected; list.append is atomic)
+# ---------------------------------------------------------------------------
+network_stats  = {}   # ip -> stats dict
+dns_table      = {}
+whois_cache    = {}
+bandwidth_log  = {}
+alert_log      = []   # Live alert log — append-only, GIL-safe
 
+# ---------------------------------------------------------------------------
+# NETWORK IDENTITY
+# ---------------------------------------------------------------------------
 try:
-    my_mac = get_if_hwaddr(conf.ifaces.dev_from_index(11)) # Use your Wi-Fi index
-except:
+    my_mac = get_if_hwaddr(conf.ifaces.dev_from_index(SNIFF_IFACE_INDEX))
+except Exception:
     my_mac = "00:00:00:00:00:00"
 
-# ROBUST IP DETECTION
 def get_internal_ip():
+    """Robust self-IP detection via UDP trick (no packets sent)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Doesn't actually send data, just finds the interface used to reach the internet
         s.connect(('8.8.8.8', 1))
         ip = s.getsockname()[0]
     except Exception:
@@ -38,157 +54,247 @@ def get_internal_ip():
     return ip
 
 my_ip = get_internal_ip()
-print(f"[*] Target IP: {my_ip}")
+print(f"[*] My IP  : {my_ip}")
+print(f"[*] My MAC : {my_mac}")
 
+# ---------------------------------------------------------------------------
+# ALERT LOG HELPER
+# ---------------------------------------------------------------------------
+def add_alert(ip, severity, message):
+    """
+    Thread-safe alert append.
+    severity: 'critical' | 'warning' | 'info'
+    GIL guarantees list.append() is atomic — no lock needed.
+    """
+    hostname = network_stats.get(ip, {}).get("hostname", ip)
+    # Avoid hostname == raw IP in the label (looks redundant)
+    display = hostname if hostname != ip else ip
+
+    alert = {
+        "timestamp": time.strftime("%H:%M:%S"),
+        "ip":        ip,
+        "hostname":  display,
+        "severity":  severity,
+        "message":   message,
+    }
+    alert_log.append(alert)
+
+    # Trim oldest entries to cap memory (del on list is O(n) but infrequent)
+    if len(alert_log) > MAX_ALERTS:
+        del alert_log[0]
+
+# ---------------------------------------------------------------------------
+# WHOIS / HOSTNAME HELPERS
+# ---------------------------------------------------------------------------
 def get_hostname_passive(ip):
-    """Fallback: Try to resolve the IP if we didn't sniff the DNS query."""
     try:
         return socket.gethostbyaddr(ip)[0]
-    except:
+    except Exception:
         return ip
-    
+
 def get_org_name(ip):
-    # Skip private/local IPs
     if ip.startswith(("192.168.", "10.", "127.", "172.16.", "fe80:")):
         return "Local Network"
-    
     if ip in whois_cache:
         return whois_cache[ip]
-
     try:
-        # Perform the lookup
-        obj = IPWhois(ip)
+        obj     = IPWhois(ip)
         results = obj.lookup_rdap(depth=1)
-        # Extract the Organization/Network name
-        org = results.get('asn_description', 'Unknown Organization')
+        org     = results.get('asn_description', 'Unknown Organization')
         whois_cache[ip] = org
         return org
-    except:
+    except Exception:
         return "Unknown"
 
-# We run this in a thread so the UI doesn't freeze
 def async_whois_lookup(ip):
+    """Run WHOIS in a daemon thread so the sniffer never blocks."""
     name = get_org_name(ip)
     if ip in network_stats:
         network_stats[ip]["hostname"] = name
 
 def get_service_name(port, proto="tcp"):
     try:
-        # Translates port (e.g. 443) to service name (e.g. 'https')
         return socket.getservbyport(port, proto)
-    except:
-        return f"Port {port}" # Fallback to just showing the port number
+    except Exception:
+        return f"Port {port}"
 
+# ---------------------------------------------------------------------------
+# PACKET PROCESSOR  (runs on Scapy sniffer thread — must stay non-blocking)
+# ---------------------------------------------------------------------------
 def process_packet(pkt):
-    # --- MAC-BASED OUTBOUND DETECTION ---
-    # If the source MAC is yours, the packet is leaving your PC (Outbound)
-    is_outbound = False
-    if pkt.src == my_mac:
-        is_outbound = True
+    # MAC-based outbound detection (Windows hardware-offload workaround)
+    is_outbound = (pkt.src == my_mac)
 
-    # Identify the IP layer (v4 or v6)
     ip_layer = pkt[IP] if IP in pkt else (pkt[IPv6] if IPv6 in pkt else None)
-    
-    if ip_layer:
-        src, dst = ip_layer.src, ip_layer.dst
-        
-        # If outbound, we track the destination (where you are talking to)
-        # If inbound, we track the source (who is talking to you)
-        target_ip = dst if is_outbound else src
-        
-        # Skip internal traffic (your PC talking to itself)
-        if target_ip == my_ip or target_ip == "127.0.0.1" or target_ip == "::1":
-            return
+    if not ip_layer:
+        return
 
-        now = time.time()
-        
-        # Initialize stats for new IPs
-        if target_ip not in network_stats:
-            network_stats[target_ip] = {
-                "hostname": target_ip,
-                "in": 0, "out": 0, "bytes": 0,
-                "last_seen": now,
-                "protocol": "TCP" if TCP in pkt else "UDP" if UDP in pkt else "Other",
-                "packet_times": [],
-                "avg_iat": 0,
-                "last_packet_time": now
-            }
-            threading.Thread(target=async_whois_lookup, args=(target_ip,), daemon=True).start()
-        
-        # Update Behavioral Timing (IAT)
-        iat = now - network_stats[target_ip]["last_packet_time"]
-        network_stats[target_ip]["packet_times"].append(iat)
-        if len(network_stats[target_ip]["packet_times"]) > 20:
-            network_stats[target_ip]["packet_times"].pop(0)
-        
-        network_stats[target_ip]["avg_iat"] = sum(network_stats[target_ip]["packet_times"]) / len(network_stats[target_ip]["packet_times"])
-        network_stats[target_ip]["last_packet_time"] = now
+    src, dst   = ip_layer.src, ip_layer.dst
+    target_ip  = dst if is_outbound else src
 
-        # Update Byte Counts and Directions
-        network_stats[target_ip]["bytes"] += len(pkt)
-        network_stats[target_ip]["last_seen"] = now
-        
-        direction = "out" if is_outbound else "in"
-        network_stats[target_ip][direction] += 1
-        
-        # Run anomaly checks
-        check_anomalies(target_ip, pkt)
+    # Skip loopback / self traffic
+    if target_ip in (my_ip, "127.0.0.1", "::1"):
+        return
 
+    now = time.time()
+
+    # ── Initialise entry for new IP ──────────────────────────────────────
+    if target_ip not in network_stats:
+        proto = "TCP" if TCP in pkt else ("UDP" if UDP in pkt else "Other")
+        network_stats[target_ip] = {
+            "hostname":         target_ip,
+            "in":               0,
+            "out":              0,
+            "bytes":            0,
+            "last_seen":        now,
+            "protocol":         proto,
+            "packet_times":     [],
+            "avg_iat":          0,
+            "last_packet_time": now,
+            "flags":            [],
+            "kb_per_sec":       0,
+        }
+        threading.Thread(target=async_whois_lookup, args=(target_ip,),
+                         daemon=True).start()
+        add_alert(target_ip, "info",
+                  f"New host discovered — protocol {proto}")
+
+    stats = network_stats[target_ip]
+
+    # ── Behavioural timing (IAT) ─────────────────────────────────────────
+    iat = now - stats["last_packet_time"]
+    stats["packet_times"].append(iat)
+    if len(stats["packet_times"]) > 20:
+        stats["packet_times"].pop(0)
+    stats["avg_iat"]          = sum(stats["packet_times"]) / len(stats["packet_times"])
+    stats["last_packet_time"] = now
+
+    # ── Byte / direction counters ────────────────────────────────────────
+    stats["bytes"]     += len(pkt)
+    stats["last_seen"]  = now
+    stats["out" if is_outbound else "in"] += 1
+
+    # ── Anomaly detection ────────────────────────────────────────────────
+    check_anomalies(target_ip, pkt)
+
+# ---------------------------------------------------------------------------
+# PACKET SNIFFER LAUNCHER
+# ---------------------------------------------------------------------------
 def start_sniffing():
-    # This will print all Windows interfaces so you can find the right one
     interfaces = get_windows_if_list()
     for i in interfaces:
-        print(f"Index: {i['index']} | Name: {i['name']} | IP: {i['ips']}")
+        print(f"  Index: {i['index']} | Name: {i['name']} | IP: {i['ips']}")
 
-    # CHANGE THIS: Use the Index number of your Wi-Fi card (usually 1, 2, or 3)
-    # If your Wi-Fi is Index 5, change it to iface=conf.ifaces.dev_from_index(5)
-    target_iface = conf.ifaces.dev_from_index(11) 
-    print(f"[*] Starting Sniffer on {target_iface}...")
+    target_iface = conf.ifaces.dev_from_index(SNIFF_IFACE_INDEX)
+    print(f"[*] Sniffing on → {target_iface}")
     sniff(iface=target_iface, prn=process_packet, store=False)
 
+# ---------------------------------------------------------------------------
+# BANDWIDTH CALCULATOR  (1-second ticker, separate daemon thread)
+# ---------------------------------------------------------------------------
 def calculate_rates():
-    """Background task to update KB/s for every IP."""
     while True:
-        time.sleep(1) # Calculate every second
+        time.sleep(1)
         now = time.time()
-        for ip, stats in network_stats.items():
+        for ip, stats in list(network_stats.items()):   # list() — concurrency fix
             if ip not in bandwidth_log:
                 bandwidth_log[ip] = {"last_bytes": 0, "last_time": now}
-            
-            # Calculate Delta
+
             bytes_diff = stats["bytes"] - bandwidth_log[ip]["last_bytes"]
-            time_diff = now - bandwidth_log[ip]["last_time"]
-            
-            # Rate in KB/s
-            rate = (bytes_diff / 1024) / time_diff if time_diff > 0 else 0
+            time_diff  = now            - bandwidth_log[ip]["last_time"]
+
+            rate             = (bytes_diff / 1024) / time_diff if time_diff > 0 else 0
             stats["kb_per_sec"] = round(rate, 2)
-            
-            # Update log
+
             bandwidth_log[ip]["last_bytes"] = stats["bytes"]
-            bandwidth_log[ip]["last_time"] = now
+            bandwidth_log[ip]["last_time"]  = now
 
+# ---------------------------------------------------------------------------
+# ANOMALY DETECTION  (local rules + Groq escalation)
+# ---------------------------------------------------------------------------
 def check_anomalies(target_ip, pkt):
-    if "flags" not in network_stats[target_ip]:
-        network_stats[target_ip]["flags"] = []
+    stats = network_stats[target_ip]
 
-    # 1. Large Packet Detection (Potential Data Exfiltration)
-    if len(pkt) > 1450: # Standard MTU is ~1500
-        if "Large Packets" not in network_stats[target_ip]["flags"]:
-            network_stats[target_ip]["flags"].append("Large Payload")
+    # ── Rule 1: High-Rate Flood ──────────────────────────────────────────
+    flood_by_speed = stats.get("kb_per_sec", 0) > 800
+    flood_by_iat   = stats["in"] > 200 and stats["avg_iat"] < 0.002
+    if (flood_by_speed or flood_by_iat) and "High Rate Flood" not in stats["flags"]:
+        stats["flags"].append("High Rate Flood")
+        add_alert(
+            target_ip, "critical",
+            f"High-rate flood — {stats.get('kb_per_sec', 0):.1f} KB/s  |  "
+            f"Avg IAT {stats['avg_iat']:.4f}s"
+        )
 
+    # ── Rule 2: Large Payload ────────────────────────────────────────────
+    if len(pkt) > 1450 and "Large Payload" not in stats["flags"]:
+        stats["flags"].append("Large Payload")
+        add_alert(
+            target_ip, "warning",
+            f"Oversized packet detected — {len(pkt)} bytes"
+        )
+
+    # ── Rule 3: Port Scan Heuristic ──────────────────────────────────────
+    # High outbound count with very few inbound responses = scan-like
+    if (stats["out"] > 100 and stats["in"] < 5
+            and "Port Scan Suspected" not in stats["flags"]):
+        stats["flags"].append("Port Scan Suspected")
+        add_alert(
+            target_ip, "warning",
+            f"Port scan heuristic — {stats['out']} out / {stats['in']} in"
+        )
+
+    # ── Rule 4: Groq AI Escalation (after 50 packets of evidence) ────────
+    if stats["in"] > 50 and "ai_verdict" not in stats:
+        threading.Thread(target=get_groq_analysis, args=(target_ip,),
+                         daemon=True).start()
+
+# ---------------------------------------------------------------------------
+# GROQ AI ANALYSIS  (daemon thread — never blocks sniffer)
+# ---------------------------------------------------------------------------
+def get_groq_analysis(ip):
+    stats = network_stats.get(ip)
+    if not stats:
+        return
+
+    try:
+        prompt = (
+            f"Analyze network behavior for IP {ip}: "
+            f"Protocol {stats['protocol']}, "
+            f"Inbound packets {stats['in']}, Outbound packets {stats['out']}, "
+            f"Total bytes {stats['bytes']}, "
+            f"Avg inter-arrival time {stats['avg_iat']:.6f}s, "
+            f"Speed {stats.get('kb_per_sec', 0):.2f} KB/s, "
+            f"Existing flags: {stats['flags']}. "
+            f"Give a single-sentence security verdict."
+        )
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+        )
+        verdict = completion.choices[0].message.content.strip()
+        stats["ai_verdict"] = verdict
+        add_alert(ip, "info", f"[AI] {verdict[:140]}")
+    except Exception:
+        stats["ai_verdict"] = "AI Analysis Timeout"
+        add_alert(ip, "info", "[AI] Analysis timed out — Groq API unreachable")
+
+# ---------------------------------------------------------------------------
+# TRAINING DATA PERSISTENCE
+# ---------------------------------------------------------------------------
 def save_to_dataset(ip, stats, label):
     file_exists = os.path.isfile(DATASET_FILE)
-    proto_map = {"TCP": 1, "UDP": 2, "Other": 0}
-    
+    proto_map   = {"TCP": 1, "UDP": 2, "Other": 0}
+
     features = {
-        "ip_address": ip,
-        "total_in": stats["in"],
-        "total_out": stats["out"],
+        "ip_address":  ip,
+        "total_in":    stats["in"],
+        "total_out":   stats["out"],
         "total_bytes": stats["bytes"],
-        "kb_per_sec": stats.get("kb_per_sec", 0),
-        "avg_iat": stats.get("avg_iat", 0), # CRITICAL FOR ML
-        "protocol": proto_map.get(stats["protocol"], 0),
-        "is_malicious": label 
+        "kb_per_sec":  stats.get("kb_per_sec", 0),
+        "avg_iat":     stats.get("avg_iat", 0),
+        "protocol":    proto_map.get(stats["protocol"], 0),
+        "is_malicious": label,
     }
 
     with open(DATASET_FILE, mode='a', newline='') as f:
@@ -197,56 +303,71 @@ def save_to_dataset(ip, stats, label):
             writer.writeheader()
         writer.writerow(features)
 
-
+# ---------------------------------------------------------------------------
+# FLASK ROUTES
+# ---------------------------------------------------------------------------
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
 @app.route('/api/stats')
 def get_stats():
-    # 1. Calculate Total Session Volume (Cumulative across all time)
-    total_bytes = sum(d.get("bytes", 0) for d in network_stats.values())
-    total_mb = round(total_bytes / (1024 * 1024), 2)
-    
-    # 2. Filter for Active Devices (to keep the table clean)
-    current_time = time.time()
-    active_devices = {
-        ip: data for ip, data in network_stats.items() 
-        if current_time - data.get("last_seen", 0) < 60
-    }
+    total_bytes = sum(d.get("bytes", 0) for d in list(network_stats.values()))
+    total_mb    = round(total_bytes / (1024 * 1024), 2)
 
-    # 3. Return the payload
+    # Build protocol distribution counts
+    proto_dist = {"TCP": 0, "UDP": 0, "Other": 0}
+    threat_flags_total = 0
+    for stats in list(network_stats.values()):
+        p = stats.get("protocol", "Other")
+        proto_dist[p] = proto_dist.get(p, 0) + 1
+        threat_flags_total += len(stats.get("flags", []))
+
+    # Compute overall threat level
+    if threat_flags_total == 0:
+        threat_level = "green"
+    elif threat_flags_total <= 3:
+        threat_level = "yellow"
+    else:
+        threat_level = "red"
+
     return jsonify({
-        "status": "Online",
-        "total_session_volume_mb": round(sum(d.get("bytes", 0) for d in network_stats.values()) / (1024*1024), 2),
-        "count": len(network_stats), # This is the active node count
-        "data": network_stats})
+        "status":        "Online",
+        "total_mb":      total_mb,
+        "count":         len(network_stats),
+        "proto_dist":    proto_dist,
+        "threat_level":  threat_level,
+        "threat_flags":  threat_flags_total,
+        "data":          dict(network_stats),   # snapshot copy for JSON safety
+    })
+
+
+@app.route('/api/alerts')
+def get_alerts():
+    """Return newest-first, capped at 50 for the UI."""
+    return jsonify(list(reversed(alert_log[-50:])))
+
 
 @app.route('/api/save_training/<int:label>')
 def save_training(label):
-    """
-    Call this with /api/save_training/0 for Normal
-    Call this with /api/save_training/1 for Attack (Kali)
-    """
     count = 0
-    for ip, stats in network_stats.items():
-        # Only log devices that have seen recent traffic
+    for ip, stats in list(network_stats.items()):
         if time.time() - stats['last_seen'] < 60:
             save_to_dataset(ip, stats, label)
             count += 1
-    return jsonify({"status": "Success", "logged_nodes": count, "mode": "Malicious" if label else "Normal"})
+    return jsonify({
+        "status":       "Success",
+        "logged_nodes": count,
+        "mode":         "Malicious" if label else "Normal",
+    })
 
 
+# ---------------------------------------------------------------------------
+# ENTRY POINT
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    # 1. Start the native packet capture (Blue Team engine)
-    threading.Thread(target=start_sniffing, daemon=True).start()
-    
-    # 2. START THIS: The behavioral rate calculator (The "Analysis" engine)
-    # Without this, your throughput will always show 0 KB/s
-    threading.Thread(target=calculate_rates, daemon=True).start()
-
-    print(f"[*] Native Packet Capture System online at http://127.0.0.1:5000")
-    
-    # 3. Run the Flask API
+    threading.Thread(target=start_sniffing,   daemon=True).start()
+    threading.Thread(target=calculate_rates,  daemon=True).start()
+    print("[*] NIDS Engine online → http://127.0.0.1:5000")
     app.run(debug=True, port=5000, use_reloader=False)
-
