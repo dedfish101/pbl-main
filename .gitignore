@@ -1,0 +1,21 @@
+# ── SENSITIVE DATA ──────────────────────────────────────────
+# This is the most important line; it hides your API key.
+.env
+
+# ── PYTHON ──────────────────────────────────────────────────
+# Ignores compiled Python files and cache folders.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# ── DATASETS ────────────────────────────────────────────────
+# Ignores the CSV files you've generated so they don't bloat Git.
+*.csv
+
+# ── OS SPECIFIC ─────────────────────────────────────────────
+# Ignores system-generated files.
+.DS_Store
+Thumbs.db
