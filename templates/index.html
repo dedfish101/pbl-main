@@ -2,563 +2,834 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NIDS — Live Dashboard</title>
-
-  <!-- Tailwind CSS -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NIDS — SOC Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
   <style>
-    /* ── Scrollbar styling ─────────────────────────────────── */
-    ::-webkit-scrollbar              { width: 6px; }
-    ::-webkit-scrollbar-track        { background: #111827; }
-    ::-webkit-scrollbar-thumb        { background: #374151; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover  { background: #4B5563; }
+    /* Scrollbars */
+    ::-webkit-scrollbar            { width:6px; height:6px; }
+    ::-webkit-scrollbar-track      { background:#0f172a; }
+    ::-webkit-scrollbar-thumb      { background:#334155; border-radius:3px; }
+    ::-webkit-scrollbar-thumb:hover{ background:#475569; }
 
-    /* ── Alert severity colour bands ─────────────────────────── */
-    .alert-critical { border-color: #EF4444; }
-    .alert-warning  { border-color: #F59E0B; }
-    .alert-info     { border-color: #3B82F6; }
+    /* Alert severity */
+    .alert-critical{ border-color:#EF4444; }
+    .alert-warning { border-color:#F59E0B; }
+    .alert-info    { border-color:#3B82F6; }
+    .badge-critical{ background:#EF4444;color:#fff; }
+    .badge-warning { background:#F59E0B;color:#000; }
+    .badge-info    { background:#3B82F6;color:#fff; }
 
-    .badge-critical { background:#EF4444; color:#fff; }
-    .badge-warning  { background:#F59E0B; color:#000; }
-    .badge-info     { background:#3B82F6; color:#fff; }
-
-    /* ── Threat gauge glow ────────────────────────────────────── */
-    .gauge-green  { box-shadow: 0 0 18px 4px #22c55e55; border-color: #22c55e; }
-    .gauge-yellow { box-shadow: 0 0 18px 4px #f59e0b55; border-color: #f59e0b; }
-    .gauge-red    { box-shadow: 0 0 18px 4px #ef444488; border-color: #ef4444;
-                    animation: pulse-red 1s infinite; }
-
-    @keyframes pulse-red {
-      0%, 100% { box-shadow: 0 0 18px 4px #ef444488; }
-      50%       { box-shadow: 0 0 32px 8px #ef4444cc; }
+    /* Threat gauge */
+    .gauge-green { box-shadow:0 0 20px 5px #22c55e44;border-color:#22c55e; }
+    .gauge-yellow{ box-shadow:0 0 20px 5px #f59e0b44;border-color:#f59e0b; }
+    .gauge-red   { box-shadow:0 0 20px 5px #ef444466;border-color:#ef4444;
+                   animation:pulse-red 1s infinite; }
+    @keyframes pulse-red{
+      0%,100%{ box-shadow:0 0 20px 5px #ef444466; }
+      50%    { box-shadow:0 0 36px 10px #ef4444bb; }
     }
 
-    /* ── Fade-in for new alert rows ─────────────────────────── */
-    @keyframes fadeSlide {
-      from { opacity: 0; transform: translateX(12px); }
-      to   { opacity: 1; transform: translateX(0); }
+    /* Alert slide-in */
+    @keyframes fadeSlide{
+      from{ opacity:0; transform:translateX(10px); }
+      to  { opacity:1; transform:translateX(0); }
     }
-    .alert-row { animation: fadeSlide 0.25s ease-out; }
+    .alert-row{ animation:fadeSlide .2s ease-out; }
 
-    /* ── Table alternating rows ──────────────────────────────── */
-    tbody tr:nth-child(even) { background: #111827; }
-    tbody tr:hover            { background: #1e293b !important; }
+    /* Filter pills */
+    .pill{
+      font-size:10px;padding:2px 9px;border-radius:9999px;
+      border:1px solid #334155;color:#64748b;background:transparent;cursor:pointer;
+      transition:all .15s;
+    }
+    .pill:hover { background:#1e293b;color:#e2e8f0; }
+    .pill.active{ background:#1e293b !important;color:#f1f5f9 !important;border-color:#64748b !important; }
+
+    /* Tab buttons */
+    .tab-btn{
+      font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+      padding:8px 20px;border-bottom:2px solid transparent;
+      color:#64748b;cursor:pointer;transition:all .2s;white-space:nowrap;
+    }
+    .tab-btn:hover  { color:#cbd5e1; }
+    .tab-btn.active { color:#22d3ee;border-bottom-color:#22d3ee; }
+
+    /* Table rows */
+    #host-tbody tr:nth-child(even){ background:#0f172a; }
+    #host-tbody tr:hover           { background:#1e293b !important; }
+
+    /* Range slider */
+    input[type=range]{ accent-color:#22d3ee; }
+
+    /* Settings card */
+    .settings-card{
+      background:#0f172a;border:1px solid #1e293b;
+      border-radius:12px;padding:24px;
+    }
   </style>
 </head>
 
-<body class="bg-gray-950 text-gray-200 font-mono text-sm min-h-screen">
+<body class="bg-slate-950 text-slate-200 font-mono text-sm h-screen overflow-hidden">
 
-<!-- ═══════════════════════════════════════════════════════════
-     LAYOUT — two columns: main content | alert sidebar
-════════════════════════════════════════════════════════════════ -->
-<div class="flex h-screen overflow-hidden">
+<!-- ═══════════════════════ ROOT LAYOUT ═══════════════════════════════════ -->
+<div class="flex h-full">
 
-  <!-- ╔══════════════════════════════════════════════════╗ -->
-  <!-- ║              MAIN CONTENT AREA                  ║ -->
-  <!-- ╚══════════════════════════════════════════════════╝ -->
-  <div class="flex-1 flex flex-col overflow-hidden">
+  <!-- ── MAIN AREA ──────────────────────────────────────────────────────── -->
+  <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
 
-    <!-- ── TOP NAVBAR ─────────────────────────────────────── -->
-    <header class="bg-gray-900 border-b border-gray-700 px-6 py-3 flex items-center gap-4 flex-shrink-0">
+    <!-- ── TOPBAR ────────────────────────────────────────────────────────── -->
+    <header class="bg-slate-900 border-b border-slate-700 px-5 py-2.5 flex items-center gap-4 flex-shrink-0">
       <div class="flex items-center gap-2">
-        <!-- Pulse dot -->
-        <span class="relative flex h-3 w-3">
-          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-          <span class="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+        <span class="relative flex h-2.5 w-2.5">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-70"></span>
+          <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500"></span>
         </span>
-        <span class="text-cyan-400 font-bold tracking-widest uppercase text-base">NIDS Engine</span>
+        <span class="text-cyan-400 font-bold tracking-widest text-sm">NIDS // SOC Console</span>
       </div>
-
-      <div class="ml-auto flex items-center gap-6 text-xs text-gray-400">
+      <nav class="flex ml-4 border-b-0" id="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('soc',this)">📊 SOC Overview</button>
+        <button class="tab-btn"        onclick="switchTab('hosts',this)">🖥 Host Inventory</button>
+        <button class="tab-btn"        onclick="switchTab('settings',this)">⚙️ Security Settings</button>
+      </nav>
+      <div class="ml-auto flex items-center gap-5 text-xs text-slate-500">
         <span>Status: <span id="hdr-status" class="text-green-400 font-bold">—</span></span>
-        <span>Session: <span id="hdr-mb" class="text-white font-bold">0</span> MB</span>
+        <span>Vol: <span id="hdr-mb"    class="text-white font-bold">0</span> MB</span>
         <span>Hosts: <span id="hdr-count" class="text-white font-bold">0</span></span>
         <span>Flags: <span id="hdr-flags" class="text-white font-bold">0</span></span>
       </div>
     </header>
 
-    <!-- ── STAT CARDS + CHARTS ROW ───────────────────────── -->
-    <div class="flex-shrink-0 grid grid-cols-2 lg:grid-cols-4 gap-4 p-4">
+    <!-- ═══════════════════════════════════════════════════════════════════
+         TAB 1 — SOC OVERVIEW
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-soc" class="flex-1 overflow-auto p-4 flex flex-col gap-4">
 
-      <!-- Card: Threat Gauge -->
-      <div class="bg-gray-900 rounded-xl p-4 flex flex-col items-center justify-center gap-2 border-2 border-gray-700 transition-all duration-500" id="threat-gauge-card">
-        <p class="text-xs text-gray-400 uppercase tracking-widest">Threat Level</p>
-        <div id="threat-circle"
-             class="w-16 h-16 rounded-full border-4 border-gray-600 flex items-center justify-center transition-all duration-700">
-          <span id="threat-icon" class="text-2xl">🛡️</span>
+      <!-- Metric cards row -->
+      <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
+
+        <!-- Threat Gauge card -->
+        <div class="bg-slate-900 rounded-xl p-4 border border-slate-800 flex flex-col items-center gap-2">
+          <p class="text-xs text-slate-500 uppercase tracking-widest">Threat Level</p>
+          <div id="threat-circle"
+               class="w-14 h-14 rounded-full border-4 border-slate-600 flex items-center justify-center transition-all duration-700">
+            <span id="threat-icon" class="text-xl">🛡️</span>
+          </div>
+          <span id="threat-label" class="text-xs font-bold text-slate-400 uppercase tracking-widest">CLEAR</span>
         </div>
-        <span id="threat-label" class="text-xs font-bold text-gray-400 uppercase tracking-widest">CLEAR</span>
-      </div>
 
-      <!-- Card: Active Hosts -->
-      <div class="bg-gray-900 rounded-xl p-4 flex flex-col gap-1">
-        <p class="text-xs text-gray-500 uppercase tracking-widest">Active Hosts</p>
-        <p id="card-hosts" class="text-3xl font-bold text-cyan-400">0</p>
-        <p class="text-xs text-gray-600">unique IPs tracked</p>
-      </div>
-
-      <!-- Card: Session Volume -->
-      <div class="bg-gray-900 rounded-xl p-4 flex flex-col gap-1">
-        <p class="text-xs text-gray-500 uppercase tracking-widest">Session Volume</p>
-        <p id="card-mb" class="text-3xl font-bold text-purple-400">0</p>
-        <p class="text-xs text-gray-600">megabytes captured</p>
-      </div>
-
-      <!-- Card: Alert Count -->
-      <div class="bg-gray-900 rounded-xl p-4 flex flex-col gap-1">
-        <p class="text-xs text-gray-500 uppercase tracking-widest">Total Alerts</p>
-        <p id="card-alerts" class="text-3xl font-bold text-red-400">0</p>
-        <p class="text-xs text-gray-600">logged this session</p>
-      </div>
-    </div>
-
-    <!-- ── PROTOCOL CHART + THROUGHPUT CHART ─────────────── -->
-    <div class="flex-shrink-0 grid grid-cols-1 lg:grid-cols-3 gap-4 px-4 pb-4">
-
-      <!-- Protocol Distribution Doughnut -->
-      <div class="bg-gray-900 rounded-xl p-4 flex flex-col gap-2">
-        <p class="text-xs text-gray-400 uppercase tracking-widest">Protocol Distribution</p>
-        <div class="flex-1 flex items-center justify-center" style="height:160px;">
-          <canvas id="proto-chart"></canvas>
+        <!-- Active Hosts -->
+        <div class="bg-slate-900 rounded-xl p-4 border border-slate-800 flex flex-col gap-1">
+          <p class="text-xs text-slate-500 uppercase tracking-widest">Active Hosts</p>
+          <p id="card-hosts" class="text-3xl font-bold text-cyan-400">0</p>
+          <p class="text-xs text-slate-600">unique IPs tracked</p>
         </div>
-        <div class="flex justify-center gap-4 text-xs mt-1">
-          <span><span class="inline-block w-2 h-2 rounded-full bg-cyan-400 mr-1"></span>TCP</span>
-          <span><span class="inline-block w-2 h-2 rounded-full bg-purple-400 mr-1"></span>UDP</span>
-          <span><span class="inline-block w-2 h-2 rounded-full bg-gray-500 mr-1"></span>Other</span>
+
+        <!-- Session Volume -->
+        <div class="bg-slate-900 rounded-xl p-4 border border-slate-800 flex flex-col gap-1">
+          <p class="text-xs text-slate-500 uppercase tracking-widest">Session Volume</p>
+          <p id="card-mb" class="text-3xl font-bold text-violet-400">0</p>
+          <p class="text-xs text-slate-600">megabytes captured</p>
+        </div>
+
+        <!-- Alert Count -->
+        <div class="bg-slate-900 rounded-xl p-4 border border-slate-800 flex flex-col gap-1">
+          <p class="text-xs text-slate-500 uppercase tracking-widest">Total Alerts</p>
+          <p id="card-alerts" class="text-3xl font-bold text-red-400">0</p>
+          <p class="text-xs text-slate-600">logged this session</p>
         </div>
       </div>
 
-      <!-- Throughput Sparkline (last 30 ticks) -->
-      <div class="lg:col-span-2 bg-gray-900 rounded-xl p-4 flex flex-col gap-2">
-        <p class="text-xs text-gray-400 uppercase tracking-widest">Live Throughput (KB/s — top host)</p>
-        <div class="flex-1" style="height:160px;">
-          <canvas id="throughput-chart"></canvas>
-        </div>
-      </div>
-    </div>
+      <!-- Charts row -->
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
 
-    <!-- ── NETWORK TABLE ──────────────────────────────────── -->
-    <div class="flex-1 overflow-auto px-4 pb-4">
-      <div class="bg-gray-900 rounded-xl overflow-hidden border border-gray-800">
-        <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-          <span class="text-xs text-gray-400 uppercase tracking-widest font-bold">Connection Table</span>
-          <div class="flex gap-2">
-            <button onclick="saveTraining(0)"
-                    class="text-xs px-3 py-1 rounded bg-green-800 hover:bg-green-700 text-green-200 transition">
-              ✅ Log Normal
-            </button>
-            <button onclick="saveTraining(1)"
-                    class="text-xs px-3 py-1 rounded bg-red-800 hover:bg-red-700 text-red-200 transition">
-              ☠️ Log Attack
-            </button>
+        <!-- Protocol doughnut -->
+        <div class="bg-slate-900 rounded-xl p-4 border border-slate-800 flex flex-col gap-2">
+          <p class="text-xs text-slate-500 uppercase tracking-widest">Protocol Distribution</p>
+          <div class="flex-1 flex items-center justify-center" style="height:170px;">
+            <canvas id="proto-chart"></canvas>
+          </div>
+          <div class="flex justify-center gap-4 text-xs">
+            <span><span class="inline-block w-2 h-2 rounded-full bg-cyan-400 mr-1"></span>TCP</span>
+            <span><span class="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1"></span>UDP</span>
+            <span><span class="inline-block w-2 h-2 rounded-full bg-slate-500 mr-1"></span>Other</span>
           </div>
         </div>
 
-        <div class="overflow-x-auto">
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="bg-gray-800 text-gray-400 text-left">
-                <th class="px-3 py-2">IP / Host</th>
-                <th class="px-3 py-2">Proto</th>
-                <th class="px-3 py-2 text-right">↓ In</th>
-                <th class="px-3 py-2 text-right">↑ Out</th>
-                <th class="px-3 py-2 text-right">KB/s</th>
-                <th class="px-3 py-2 text-right">Avg IAT</th>
-                <th class="px-3 py-2">Flags</th>
-                <th class="px-3 py-2">AI Verdict</th>
-              </tr>
-            </thead>
-            <tbody id="stats-body">
-              <tr>
-                <td colspan="8" class="px-3 py-8 text-center text-gray-600">
-                  Waiting for packets…
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- Throughput sparkline (spans 2 cols) -->
+        <div class="xl:col-span-2 bg-slate-900 rounded-xl p-4 border border-slate-800 flex flex-col gap-2">
+          <div class="flex items-center justify-between">
+            <p class="text-xs text-slate-500 uppercase tracking-widest">Live Throughput — Peak Host (KB/s)</p>
+            <span id="peak-kbs" class="text-xs font-bold text-cyan-300">0 KB/s</span>
+          </div>
+          <div class="flex-1" style="height:170px;">
+            <canvas id="throughput-chart"></canvas>
+          </div>
         </div>
       </div>
-    </div>
 
-  </div><!-- /main content -->
+      <!-- Mini table preview (top 5 hosts by KB/s) -->
+      <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-slate-800">
+          <span class="text-xs text-slate-400 uppercase tracking-widest font-bold">Top Connections by Throughput</span>
+        </div>
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="bg-slate-800 text-slate-400 text-left">
+              <th class="px-3 py-2">IP / Hostname</th>
+              <th class="px-3 py-2">Proto</th>
+              <th class="px-3 py-2 text-right">↓ In</th>
+              <th class="px-3 py-2 text-right">↑ Out</th>
+              <th class="px-3 py-2 text-right">KB/s</th>
+              <th class="px-3 py-2">Flags</th>
+            </tr>
+          </thead>
+          <tbody id="soc-top-body">
+            <tr><td colspan="6" class="px-3 py-6 text-center text-slate-600">Awaiting traffic…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div><!-- /tab-soc -->
 
 
-  <!-- ╔══════════════════════════════════════════════════╗ -->
-  <!-- ║              LIVE ALERT LOG SIDEBAR             ║ -->
-  <!-- ╚══════════════════════════════════════════════════╝ -->
-  <aside class="w-72 bg-gray-900 border-l border-gray-700 flex flex-col flex-shrink-0">
+    <!-- ═══════════════════════════════════════════════════════════════════
+         TAB 2 — HOST INVENTORY
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-hosts" class="flex-1 overflow-hidden flex-col gap-3 p-4 hidden">
 
-    <!-- Sidebar header -->
-    <div class="px-4 py-3 border-b border-gray-700 flex items-center justify-between flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <span class="text-red-400">⚡</span>
-        <span class="text-xs font-bold uppercase tracking-widest text-gray-200">Alert Log</span>
+      <!-- Toolbar -->
+      <div class="flex items-center gap-3 mb-3">
+        <div class="relative flex-1 max-w-xs">
+          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
+          <input id="host-search" type="text" placeholder="Filter by IP or hostname…"
+                 oninput="filterHosts()"
+                 class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"/>
+        </div>
+        <span class="text-xs text-slate-600" id="host-filter-count"></span>
+        <div class="ml-auto flex gap-2">
+          <button onclick="saveTraining(0)"
+                  class="text-xs px-3 py-1.5 rounded-lg bg-emerald-900 hover:bg-emerald-800 text-emerald-200 transition font-bold">
+            ✅ Log Normal
+          </button>
+          <button onclick="saveTraining(1)"
+                  class="text-xs px-3 py-1.5 rounded-lg bg-red-900 hover:bg-red-800 text-red-200 transition font-bold">
+            ☠️ Log Attack
+          </button>
+        </div>
+      </div>
+
+      <!-- Full host table -->
+      <div class="flex-1 overflow-auto bg-slate-900 rounded-xl border border-slate-800">
+        <table class="w-full text-xs">
+          <thead class="sticky top-0 z-10">
+            <tr class="bg-slate-800 text-slate-400 text-left">
+              <th class="px-3 py-2.5 whitespace-nowrap">IP Address</th>
+              <th class="px-3 py-2.5">Hostname / Org</th>
+              <th class="px-3 py-2.5">Proto</th>
+              <th class="px-3 py-2.5 text-right">↓ In</th>
+              <th class="px-3 py-2.5 text-right">↑ Out</th>
+              <th class="px-3 py-2.5 text-right">KB/s</th>
+              <th class="px-3 py-2.5 text-right">Avg IAT</th>
+              <th class="px-3 py-2.5">Flags</th>
+              <th class="px-3 py-2.5" style="min-width:260px;">AI Behavioral Analysis</th>
+            </tr>
+          </thead>
+          <tbody id="host-tbody">
+            <tr><td colspan="9" class="px-3 py-8 text-center text-slate-600">Waiting for packets…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div><!-- /tab-hosts -->
+
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         TAB 3 — SECURITY SETTINGS
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-settings" class="flex-1 overflow-auto p-6 hidden">
+      <div class="max-w-2xl mx-auto flex flex-col gap-6">
+
+        <div>
+          <h2 class="text-base font-bold text-slate-100 mb-1">Detection Engine Tuning</h2>
+          <p class="text-xs text-slate-500">
+            Adjust thresholds live — changes take effect on the next packet without restarting the engine.
+          </p>
+        </div>
+
+        <!-- Slider 1: Flood KB/s -->
+        <div class="settings-card flex flex-col gap-4">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm font-bold text-slate-100">Flood Detection Threshold</p>
+              <p class="text-xs text-slate-500 mt-0.5">
+                Tier 1 Rule 1 — host is flagged "High Rate Flood" when throughput exceeds this value.
+                Lower = more sensitive; raise if legitimate traffic triggers false positives.
+              </p>
+            </div>
+            <span class="ml-4 text-lg font-bold text-cyan-400 whitespace-nowrap" id="val-flood">800 KB/s</span>
+          </div>
+          <input type="range" id="sl-flood" min="50" max="5000" step="50" value="800"
+                 oninput="updateSliderLabel('sl-flood','val-flood',' KB/s')"
+                 class="w-full"/>
+          <div class="flex justify-between text-xs text-slate-600">
+            <span>50 KB/s (sensitive)</span><span>5000 KB/s (permissive)</span>
+          </div>
+        </div>
+
+        <!-- Slider 2: AI Packet Limit -->
+        <div class="settings-card flex flex-col gap-4">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm font-bold text-slate-100">AI Escalation Packet Limit</p>
+              <p class="text-xs text-slate-500 mt-0.5">
+                Tier 2 escalation fires when a host's inbound packet count exceeds this value.
+                Lower = faster AI analysis, higher Groq API cost. Raise for quiet networks to
+                gather more behavioral evidence before escalating.
+              </p>
+            </div>
+            <span class="ml-4 text-lg font-bold text-violet-400 whitespace-nowrap" id="val-ai">50 pkts</span>
+          </div>
+          <input type="range" id="sl-ai" min="5" max="500" step="5" value="50"
+                 oninput="updateSliderLabel('sl-ai','val-ai',' pkts')"
+                 class="w-full"/>
+          <div class="flex justify-between text-xs text-slate-600">
+            <span>5 (aggressive)</span><span>500 (conservative)</span>
+          </div>
+        </div>
+
+        <!-- Slider 3: IAT Sensitivity -->
+        <div class="settings-card flex flex-col gap-4">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm font-bold text-slate-100">IAT Sensitivity</p>
+              <p class="text-xs text-slate-500 mt-0.5">
+                Inter-Arrival Time threshold in milliseconds. A host with avg IAT below this value
+                (after 200+ inbound packets) is flagged as a flood. Lower = catches faster floods
+                only; raise if hping3 attacks are slipping through.
+              </p>
+            </div>
+            <span class="ml-4 text-lg font-bold text-amber-400 whitespace-nowrap" id="val-iat">2 ms</span>
+          </div>
+          <input type="range" id="sl-iat" min="1" max="100" step="1" value="2"
+                 oninput="updateSliderLabel('sl-iat','val-iat',' ms')"
+                 class="w-full"/>
+          <div class="flex justify-between text-xs text-slate-600">
+            <span>1 ms (ultra-sensitive)</span><span>100 ms (lenient)</span>
+          </div>
+        </div>
+
+        <!-- Apply button + status -->
+        <div class="flex items-center gap-4">
+          <button onclick="applyConfig()"
+                  class="px-6 py-2.5 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded-lg text-sm transition">
+            ⚡ Apply to Live Engine
+          </button>
+          <span id="config-status" class="text-xs text-slate-500"></span>
+        </div>
+
+        <!-- Current values readout -->
+        <div class="settings-card">
+          <p class="text-xs text-slate-500 uppercase tracking-widest mb-3">Live Engine Values</p>
+          <div class="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <p class="text-xl font-bold text-cyan-400" id="live-flood">—</p>
+              <p class="text-xs text-slate-500 mt-1">Flood KB/s</p>
+            </div>
+            <div>
+              <p class="text-xl font-bold text-violet-400" id="live-ai">—</p>
+              <p class="text-xs text-slate-500 mt-1">AI Pkt Limit</p>
+            </div>
+            <div>
+              <p class="text-xl font-bold text-amber-400" id="live-iat">—</p>
+              <p class="text-xs text-slate-500 mt-1">IAT (ms)</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Architecture note -->
+        <div class="settings-card border-l-2 border-cyan-700">
+          <p class="text-xs text-slate-400 uppercase tracking-widest mb-2">Architecture Note</p>
+          <p class="text-xs text-slate-500 leading-relaxed">
+            <span class="text-cyan-300 font-bold">Tier 1 (Deterministic)</span> — Local Python rules catch high-speed floods
+            and oversized packets instantly with zero API cost or latency. <br/>
+            <span class="text-violet-300 font-bold">Tier 2 (Cognitive)</span> — Groq's Llama 3.3 70B model receives the full
+            behavioral fingerprint (IAT, direction ratios, byte volume) and returns a contextual verdict identifying
+            likely intent, risk level, and recommended action. The ai_lock + 3s cooldown prevents API rate-limiting.
+          </p>
+        </div>
+
+      </div>
+    </div><!-- /tab-settings -->
+
+  </div><!-- /main area -->
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       PERSISTENT ALERT LOG SIDEBAR
+  ════════════════════════════════════════════════════════════════════════ -->
+  <aside class="w-68 bg-slate-900 border-l border-slate-700 flex flex-col flex-shrink-0"
+         style="width:272px;">
+
+    <div class="px-3 py-2.5 border-b border-slate-700 flex items-center justify-between flex-shrink-0">
+      <div class="flex items-center gap-1.5">
+        <span class="text-red-400 text-xs">⚡</span>
+        <span class="text-xs font-bold uppercase tracking-widest text-slate-200">Alert Log</span>
       </div>
       <div class="flex items-center gap-2">
         <span id="sidebar-badge"
-              class="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full min-w-[22px] text-center">
-          0
-        </span>
-        <button id="clear-btn"
-                onclick="clearAlertDisplay()"
-                class="text-gray-500 hover:text-gray-300 text-xs transition"
-                title="Clear display">✕</button>
+              class="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full min-w-[22px] text-center">0</span>
+        <button onclick="clearAlertDisplay()"
+                class="text-slate-600 hover:text-slate-300 text-xs transition" title="Clear">✕</button>
       </div>
     </div>
 
     <!-- Filter pills -->
-    <div class="px-3 pt-2 pb-1 flex gap-1 flex-wrap flex-shrink-0 border-b border-gray-800">
-      <button onclick="setFilter('all')"      id="f-all"      class="filter-pill active-pill">ALL</button>
-      <button onclick="setFilter('critical')" id="f-critical" class="filter-pill">CRIT</button>
-      <button onclick="setFilter('warning')"  id="f-warning"  class="filter-pill">WARN</button>
-      <button onclick="setFilter('info')"     id="f-info"     class="filter-pill">INFO</button>
+    <div class="px-2 pt-1.5 pb-1 flex gap-1 flex-shrink-0 border-b border-slate-800">
+      <button onclick="setFilter('all')"      id="f-all"      class="pill active">ALL</button>
+      <button onclick="setFilter('critical')" id="f-critical" class="pill">CRIT</button>
+      <button onclick="setFilter('warning')"  id="f-warning"  class="pill">WARN</button>
+      <button onclick="setFilter('info')"     id="f-info"     class="pill">INFO</button>
     </div>
 
-    <!-- Alert feed -->
-    <div id="alert-feed" class="flex-1 overflow-y-auto p-2 space-y-1.5">
-      <p class="text-gray-600 text-xs text-center mt-4">No alerts yet…</p>
+    <div id="alert-feed" class="flex-1 overflow-y-auto p-2 space-y-1">
+      <p class="text-slate-600 text-xs text-center mt-4">No alerts yet…</p>
     </div>
 
-    <!-- Sidebar footer stats -->
-    <div class="px-3 py-2 border-t border-gray-700 flex-shrink-0 grid grid-cols-3 gap-1 text-center">
+    <!-- Footer counts -->
+    <div class="px-2 py-2 border-t border-slate-700 flex-shrink-0 grid grid-cols-3 gap-1 text-center">
       <div>
-        <p class="text-red-400 font-bold text-sm" id="cnt-critical">0</p>
-        <p class="text-gray-600 text-xs">Critical</p>
+        <p class="text-red-400 font-bold" id="cnt-critical">0</p>
+        <p class="text-slate-600 text-xs">Critical</p>
       </div>
       <div>
-        <p class="text-yellow-400 font-bold text-sm" id="cnt-warning">0</p>
-        <p class="text-gray-600 text-xs">Warning</p>
+        <p class="text-amber-400 font-bold" id="cnt-warning">0</p>
+        <p class="text-slate-600 text-xs">Warning</p>
       </div>
       <div>
-        <p class="text-blue-400 font-bold text-sm" id="cnt-info">0</p>
-        <p class="text-gray-600 text-xs">Info</p>
+        <p class="text-blue-400 font-bold" id="cnt-info">0</p>
+        <p class="text-slate-600 text-xs">Info</p>
       </div>
     </div>
+  </aside>
 
-  </aside><!-- /sidebar -->
-
-</div><!-- /flex layout -->
-
-
-<!-- ═══════════════════════════════════════════════════════════
-     INLINE STYLES for filter pills
-════════════════════════════════════════════════════════════════ -->
-<style>
-  .filter-pill {
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 9999px;
-    border: 1px solid #374151;
-    color: #9CA3AF;
-    background: transparent;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .filter-pill:hover { background: #1F2937; color: #E5E7EB; }
-  .active-pill { background: #1F2937 !important; color: #F9FAFB !important; border-color: #6B7280 !important; }
-</style>
+</div><!-- /root layout -->
 
 
-<!-- ═══════════════════════════════════════════════════════════
-     JAVASCRIPT
-════════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════ JAVASCRIPT ══════════ -->
 <script>
-// ── Chart.js Setup ────────────────────────────────────────────────────────
-Chart.defaults.color = '#6B7280';
-Chart.defaults.borderColor = '#1F2937';
+// ── Chart.js global defaults ───────────────────────────────────────────────
+Chart.defaults.color       = '#64748b';
+Chart.defaults.borderColor = '#1e293b';
 
-// Protocol Doughnut
-const protoCtx = document.getElementById('proto-chart').getContext('2d');
-const protoChart = new Chart(protoCtx, {
-  type: 'doughnut',
-  data: {
-    labels: ['TCP', 'UDP', 'Other'],
-    datasets: [{
-      data: [0, 0, 0],
-      backgroundColor: ['#22d3ee', '#a78bfa', '#4B5563'],
-      borderWidth: 0,
-      hoverOffset: 8,
-    }]
-  },
-  options: {
-    cutout: '65%',
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { callbacks: {
-      label: ctx => ` ${ctx.label}: ${ctx.raw} hosts`
-    }}}
-  }
-});
-
-// Throughput Sparkline
-const SPARKLINE_MAX = 30;
-const sparkLabels   = Array(SPARKLINE_MAX).fill('');
-const sparkData     = Array(SPARKLINE_MAX).fill(0);
-
-const throughCtx = document.getElementById('throughput-chart').getContext('2d');
-const throughChart = new Chart(throughCtx, {
-  type: 'line',
-  data: {
-    labels: sparkLabels,
-    datasets: [{
-      label: 'KB/s',
-      data: sparkData,
-      borderColor: '#22d3ee',
-      backgroundColor: 'rgba(34,211,238,0.08)',
-      borderWidth: 2,
-      pointRadius: 0,
-      fill: true,
-      tension: 0.4,
-    }]
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    scales: {
-      x: { display: false },
-      y: { min: 0, grid: { color: '#1F2937' }, ticks: { callback: v => v + ' KB/s' } }
+// Protocol doughnut
+const protoChart = new Chart(
+  document.getElementById('proto-chart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels:   ['TCP','UDP','Other'],
+      datasets: [{ data:[0,0,0],
+        backgroundColor:['#22d3ee','#a78bfa','#475569'],
+        borderWidth:0, hoverOffset:6 }]
     },
-    plugins: { legend: { display: false } }
+    options:{
+      cutout:'68%', responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{ label: c => ` ${c.label}: ${c.raw} hosts` }}
+      }
+    }
   }
-});
+);
 
-// ── State ─────────────────────────────────────────────────────────────────
-let alertFilter      = 'all';
-let lastAlertCount   = 0;
-let displayedAlerts  = [];   // currently shown (filtered) alerts
-let cleared          = false; // user hit ✕ — pause re-render until new alerts
+// Throughput sparkline
+const SPARK = 30;
+const sparkData   = Array(SPARK).fill(0);
+const sparkLabels = Array(SPARK).fill('');
+const throughChart = new Chart(
+  document.getElementById('throughput-chart').getContext('2d'), {
+    type:'line',
+    data:{
+      labels: sparkLabels,
+      datasets:[{
+        label:'KB/s', data:sparkData,
+        borderColor:'#22d3ee', backgroundColor:'rgba(34,211,238,.07)',
+        borderWidth:2, pointRadius:0, fill:true, tension:.4
+      }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      scales:{
+        x:{display:false},
+        y:{min:0, grid:{color:'#1e293b'},
+           ticks:{callback: v => v + ' KB/s'}}
+      },
+      plugins:{legend:{display:false}}
+    }
+  }
+);
 
-// Severity config
+// ── State ──────────────────────────────────────────────────────────────────
+let alertFilter    = 'all';
+let lastAlertCount = 0;
+let displayedAlerts= [];
+let cleared        = false;
+let lastData       = {};      // cached network_stats for tab 2 filtering
+let searchTerm     = '';
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  ['soc','hosts','settings'].forEach(t => {
+    document.getElementById('tab-' + t).classList.toggle('hidden', t !== name);
+    document.getElementById('tab-' + t).classList.toggle('flex',   t === name);
+  });
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  if (name === 'settings') loadConfigFromServer();
+}
+
+// ── Severity config ────────────────────────────────────────────────────────
 const SEV = {
-  critical: { border: 'alert-critical', badge: 'badge-critical', label: 'CRIT', text: 'text-red-400' },
-  warning:  { border: 'alert-warning',  badge: 'badge-warning',  label: 'WARN', text: 'text-yellow-400' },
-  info:     { border: 'alert-info',     badge: 'badge-info',     label: 'INFO', text: 'text-blue-400' },
+  critical:{ border:'alert-critical', badge:'badge-critical', label:'CRIT', text:'text-red-400' },
+  warning: { border:'alert-warning',  badge:'badge-warning',  label:'WARN', text:'text-amber-400' },
+  info:    { border:'alert-info',     badge:'badge-info',     label:'INFO', text:'text-blue-400' },
 };
 
-// ── Alert Helpers ─────────────────────────────────────────────────────────
+// ── Alert helpers ──────────────────────────────────────────────────────────
 function setFilter(f) {
   alertFilter = f;
-  cleared = false;
-  document.querySelectorAll('.filter-pill').forEach(b => b.classList.remove('active-pill'));
-  document.getElementById('f-' + f).classList.add('active-pill');
+  cleared     = false;
+  document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+  document.getElementById('f-' + f).classList.add('active');
   renderAlerts(displayedAlerts);
 }
 
 function clearAlertDisplay() {
   cleared = true;
   document.getElementById('alert-feed').innerHTML =
-    '<p class="text-gray-600 text-xs text-center mt-4">Display cleared. New alerts will appear automatically.</p>';
+    '<p class="text-slate-600 text-xs text-center mt-4">Cleared — new alerts will appear automatically.</p>';
 }
 
 function renderAlerts(alerts) {
   if (cleared) return;
-  const feed = document.getElementById('alert-feed');
-
+  const feed     = document.getElementById('alert-feed');
   const filtered = alertFilter === 'all' ? alerts : alerts.filter(a => a.severity === alertFilter);
 
-  if (filtered.length === 0) {
-    feed.innerHTML = '<p class="text-gray-600 text-xs text-center mt-4">No alerts matching filter…</p>';
+  if (!filtered.length) {
+    feed.innerHTML = '<p class="text-slate-600 text-xs text-center mt-4">No alerts matching filter…</p>';
     return;
   }
 
   feed.innerHTML = filtered.map(a => {
-    const s = SEV[a.severity] || SEV.info;
+    const s    = SEV[a.severity] || SEV.info;
     const host = (a.hostname && a.hostname !== a.ip) ? a.hostname : a.ip;
     return `
-      <div class="alert-row border-l-2 ${s.border} pl-2 py-1 bg-gray-800 rounded-r">
+      <div class="alert-row border-l-2 ${s.border} pl-2 py-1 bg-slate-800 rounded-r">
         <div class="flex items-center gap-1 mb-0.5 flex-wrap">
-          <span class="px-1.5 py-px rounded text-xs font-bold ${s.badge}">${s.label}</span>
-          <span class="text-gray-500 text-xs">${a.timestamp}</span>
-          <span class="${s.text} text-xs ml-auto truncate max-w-[110px]" title="${a.ip}">${host}</span>
+          <span class="px-1 py-px rounded text-[10px] font-bold ${s.badge}">${s.label}</span>
+          <span class="text-slate-500 text-[10px]">${a.timestamp}</span>
+          <span class="${s.text} text-[10px] ml-auto truncate max-w-[100px]" title="${a.ip}">${esc(host)}</span>
         </div>
-        <p class="text-gray-300 text-xs leading-snug">${escHtml(a.message)}</p>
+        <p class="text-slate-300 text-[10px] leading-snug">${esc(a.message)}</p>
       </div>`;
   }).join('');
 
-  // Update footer counts
-  document.getElementById('cnt-critical').textContent = alerts.filter(a => a.severity === 'critical').length;
-  document.getElementById('cnt-warning').textContent  = alerts.filter(a => a.severity === 'warning').length;
-  document.getElementById('cnt-info').textContent     = alerts.filter(a => a.severity === 'info').length;
+  document.getElementById('cnt-critical').textContent = alerts.filter(a => a.severity==='critical').length;
+  document.getElementById('cnt-warning').textContent  = alerts.filter(a => a.severity==='warning').length;
+  document.getElementById('cnt-info').textContent     = alerts.filter(a => a.severity==='info').length;
 }
 
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-// ── Threat Gauge ──────────────────────────────────────────────────────────
-const GAUGE_MAP = {
-  green:  { cls: 'gauge-green',  icon: '🛡️', label: 'CLEAR',    text: 'text-green-400' },
-  yellow: { cls: 'gauge-yellow', icon: '⚠️', label: 'ELEVATED', text: 'text-yellow-400' },
-  red:    { cls: 'gauge-red',    icon: '🚨', label: 'CRITICAL',  text: 'text-red-400' },
+// ── Threat gauge ───────────────────────────────────────────────────────────
+const GAUGE = {
+  green : { cls:'gauge-green',  icon:'🛡️', label:'CLEAR',    text:'text-green-400' },
+  yellow: { cls:'gauge-yellow', icon:'⚠️', label:'ELEVATED', text:'text-amber-400' },
+  red   : { cls:'gauge-red',    icon:'🚨', label:'CRITICAL',  text:'text-red-400'  },
 };
-
 function updateThreatGauge(level) {
-  const g     = GAUGE_MAP[level] || GAUGE_MAP.green;
-  const circle = document.getElementById('threat-circle');
-  const icon   = document.getElementById('threat-icon');
-  const label  = document.getElementById('threat-label');
-
-  circle.className = `w-16 h-16 rounded-full border-4 flex items-center justify-center transition-all duration-700 ${g.cls}`;
-  icon.textContent  = g.icon;
-  label.textContent = g.label;
-  label.className   = `text-xs font-bold uppercase tracking-widest ${g.text}`;
+  const g = GAUGE[level] || GAUGE.green;
+  document.getElementById('threat-circle').className =
+    `w-14 h-14 rounded-full border-4 flex items-center justify-center transition-all duration-700 ${g.cls}`;
+  document.getElementById('threat-icon').textContent  = g.icon;
+  const lbl = document.getElementById('threat-label');
+  lbl.textContent = g.label;
+  lbl.className   = `text-xs font-bold uppercase tracking-widest ${g.text}`;
 }
 
-// ── Flag badge renderer ───────────────────────────────────────────────────
+// ── Flag badges ────────────────────────────────────────────────────────────
 function renderFlags(flags) {
-  if (!flags || flags.length === 0) return '<span class="text-gray-700">—</span>';
+  if (!flags || !flags.length) return '<span class="text-slate-700">—</span>';
   return flags.map(f => {
-    let cls = 'bg-yellow-800 text-yellow-200';
-    if (f.includes('Flood'))  cls = 'bg-red-900 text-red-300';
-    if (f.includes('Scan'))   cls = 'bg-orange-900 text-orange-200';
-    if (f.includes('Payload')) cls = 'bg-yellow-900 text-yellow-200';
-    return `<span class="px-1.5 py-0.5 rounded text-xs ${cls}">${f}</span>`;
+    let c = 'bg-amber-900 text-amber-200';
+    if (f.includes('Flood'))   c = 'bg-red-900 text-red-300';
+    if (f.includes('Scan'))    c = 'bg-orange-900 text-orange-200';
+    if (f.includes('Payload')) c = 'bg-yellow-900 text-yellow-200';
+    return `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${c}">${f}</span>`;
   }).join(' ');
 }
 
-// ── Main stats fetch (every 2s) ───────────────────────────────────────────
+// ── Protocol badge ─────────────────────────────────────────────────────────
+function protoBadge(p) {
+  const m = {TCP:'bg-cyan-900 text-cyan-300', UDP:'bg-violet-900 text-violet-300'};
+  return `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${m[p]||'bg-slate-800 text-slate-400'}">${p}</span>`;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Main stats fetch ───────────────────────────────────────────────────────
+function updateStabilityGauge(score, label, colorKey) {
+  const g = GAUGE[colorKey] || GAUGE.green;
+  
+  // Update the circle color and pulse effect
+  const circle = document.getElementById('threat-circle');
+  circle.className = `w-14 h-14 rounded-full border-4 flex items-center justify-center transition-all duration-700 ${g.cls}`;
+  
+  // Replace the shield icon with the actual score percentage
+  document.getElementById('threat-icon').textContent = score + '%';
+  
+  // Update the text label (e.g., "Synchronized", "Jitter Detected")
+  const lbl = document.getElementById('threat-label');
+  lbl.textContent = label;
+  lbl.className   = `text-[10px] font-bold uppercase tracking-widest ${g.text}`;
+}
+
 async function fetchStats() {
   try {
     const res  = await fetch('/api/stats');
     const json = await res.json();
+    lastData   = json.data || {};
 
-    // 1. Updated Header bar — sync with backend key 'threat_flags'
+    // 1. Header Updates
     document.getElementById('hdr-status').textContent = json.status;
     document.getElementById('hdr-mb').textContent     = json.total_mb;
     document.getElementById('hdr-count').textContent  = json.count;
-    document.getElementById('hdr-flags').textContent  = json.threat_flags; // SYNCED
+    // We change this from threat_flags to the stability score
+    document.getElementById('hdr-flags').textContent  = json.stability_score + '%';
 
-    // Stat cards
+    // 2. Metric Cards
     document.getElementById('card-hosts').textContent = json.count;
     document.getElementById('card-mb').textContent    = json.total_mb;
 
-    // Threat gauge (Now dynamic based on last 60 seconds)
-    updateThreatGauge(json.threat_level || 'green');
+    // 3. Gauge Update (Calling the new function with Behavioral Stability data)
+    updateStabilityGauge(json.stability_score, json.net_status, json.color_key);
 
-    // Protocol doughnut
-    const pd = json.proto_dist || {TCP:0, UDP:0, Other:0};
-    protoChart.data.datasets[0].data = [pd.TCP || 0, pd.UDP || 0, pd.Other || 0];
+    // 4. Protocol Doughnut
+    const pd = json.proto_dist || {TCP:0,UDP:0,Other:0};
+    protoChart.data.datasets[0].data = [pd.TCP||0, pd.UDP||0, pd.Other||0];
     protoChart.update('none');
 
-    // Throughput sparkline — find top host by KB/s
-    const entries = Object.values(json.data || {});
-    const maxKB   = entries.reduce((m, s) => Math.max(m, s.kb_per_sec || 0), 0);
+    // 5. Sparkline
+    const entries = Object.values(lastData);
+    const maxKB   = entries.reduce((m,s) => Math.max(m, s.kb_per_sec||0), 0);
     sparkData.push(parseFloat(maxKB.toFixed(2)));
     sparkData.shift();
     throughChart.data.datasets[0].data = [...sparkData];
     throughChart.update('none');
+    document.getElementById('peak-kbs').textContent = maxKB.toFixed(1) + ' KB/s';
 
-    // Connection table
-    const tbody  = document.getElementById('stats-body');
-    const sorted = Object.entries(json.data || {}).sort(
-      ([,a],[,b]) => (b.kb_per_sec || 0) - (a.kb_per_sec || 0)
-    );
-
-    if (sorted.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-8 text-center text-gray-600">Waiting for packets…</td></tr>';
+    // 6. Tab 1 mini table (top 5)
+    const top5  = Object.entries(lastData)
+      .sort(([,a],[,b]) => (b.kb_per_sec||0)-(a.kb_per_sec||0))
+      .slice(0, 5);
+    const socBody = document.getElementById('soc-top-body');
+    if (!top5.length) {
+      socBody.innerHTML = '<tr><td colspan="6" class="px-3 py-6 text-center text-slate-600">Awaiting traffic…</td></tr>';
     } else {
-      tbody.innerHTML = sorted.map(([ip, s]) => {
-        const hasFlags = s.flags && s.flags.length > 0;
-        const rowBg    = hasFlags ? 'bg-red-950' : '';
-        const iat      = s.avg_iat ? s.avg_iat.toFixed(4) + 's' : '—';
-        
-        // 2. Updated Verdict Logic — Handle the new 'Rate Limited' status visually
-        let verdictClass = "text-blue-300 italic";
-        let verdictText  = s.ai_verdict || 'Pending';
-        
-        if (verdictText.includes("Rate Limited")) {
-            verdictClass = "text-yellow-500 animate-pulse font-bold";
-        }
-
-        const verdictDisplay = s.ai_verdict
-          ? `<span class="${verdictClass}" title="${escHtml(s.ai_verdict)}">${escHtml(s.ai_verdict.slice(0,40))}…</span>`
-          : '<span class="text-gray-700">Pending</span>';
-
-        const hostname = (s.hostname && s.hostname !== ip)
-          ? `<div class="text-gray-400 truncate max-w-[140px]" title="${s.hostname}">${s.hostname}</div>`
-          : '';
-
+      socBody.innerHTML = top5.map(([ip, s]) => {
+        const hasF  = s.flags && s.flags.length > 0;
+        const hname = s.hostname && s.hostname !== ip
+          ? `<div class="text-slate-500 text-[10px] truncate max-w-[140px]">${esc(s.hostname)}</div>` : '';
         return `
-          <tr class="${rowBg} transition-colors duration-300 border-b border-gray-800">
-            <td class="px-3 py-2">
-              <div class="text-cyan-300 font-bold">${ip}</div>
-              ${hostname}
-            </td>
-            <td class="px-3 py-2">
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${s.protocol === 'TCP' ? 'bg-cyan-900 text-cyan-300' : s.protocol === 'UDP' ? 'bg-purple-900 text-purple-300' : 'bg-gray-800 text-gray-400'}">
-                ${s.protocol}
-              </span>
-            </td>
-            <td class="px-3 py-2 text-right text-green-400">${s.in}</td>
+          <tr class="${hasF?'bg-red-950':''} border-b border-slate-800 transition-colors">
+            <td class="px-3 py-2"><div class="text-cyan-300 font-bold">${ip}</div>${hname}</td>
+            <td class="px-3 py-2">${protoBadge(s.protocol)}</td>
+            <td class="px-3 py-2 text-right text-emerald-400">${s.in}</td>
             <td class="px-3 py-2 text-right text-orange-400">${s.out}</td>
-            <td class="px-3 py-2 text-right font-bold ${(s.kb_per_sec||0) > 800 ? 'text-red-400' : 'text-white'}">${s.kb_per_sec || '0'}</td>
-            <td class="px-3 py-2 text-right text-gray-400">${iat}</td>
+            <td class="px-3 py-2 text-right font-bold ${(s.kb_per_sec||0)>800?'text-red-400':'text-white'}">${s.kb_per_sec||0}</td>
             <td class="px-3 py-2">${renderFlags(s.flags)}</td>
-            <td class="px-3 py-2 max-w-xs">${verdictDisplay}</td>
           </tr>`;
       }).join('');
     }
 
-  } catch(e) {
-    console.warn('[Stats] Fetch error:', e);
-  }
+    // 7. Tab 2 full table
+    renderHostTable();
+
+  } catch(e) { console.warn('[Stats]', e); }
+}
+// ── Host Inventory table render (with search filter) ───────────────────────
+function filterHosts() {
+  searchTerm = document.getElementById('host-search').value.toLowerCase().trim();
+  renderHostTable();
 }
 
-// ── Alert log fetch (every 2s, offset by 1s from stats) ──────────────────
-async function fetchAlerts() {
-  try {
-    const res    = await fetch('/api/alerts');
-    const alerts = await res.json();
+function renderHostTable() {
+  const tbody = document.getElementById('host-tbody');
+  const all   = Object.entries(lastData).sort(([,a],[,b]) => (b.kb_per_sec||0)-(a.kb_per_sec||0));
+  const rows  = searchTerm
+    ? all.filter(([ip,s]) =>
+        ip.toLowerCase().includes(searchTerm) ||
+        (s.hostname||'').toLowerCase().includes(searchTerm))
+    : all;
 
-    displayedAlerts = alerts;
+  const countEl = document.getElementById('host-filter-count');
+  countEl.textContent = searchTerm ? `${rows.length} / ${all.length} hosts` : `${all.length} hosts`;
 
-    // Badge
-    document.getElementById('sidebar-badge').textContent = alerts.length;
-    document.getElementById('card-alerts').textContent   = alerts.length;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="px-3 py-8 text-center text-slate-600">
+      ${searchTerm ? 'No hosts match your filter.' : 'Waiting for packets…'}
+    </td></tr>`;
+    return;
+  }
 
-    // Only re-render if count changed (avoids flicker)
-    if (alerts.length !== lastAlertCount) {
-      lastAlertCount = alerts.length;
-      if (cleared && alerts.length > 0) cleared = false; // new alerts resume display
-      renderAlerts(alerts);
+  tbody.innerHTML = rows.map(([ip, s]) => {
+    const hasF  = s.flags && s.flags.length > 0;
+    const iat   = s.avg_iat ? s.avg_iat.toFixed(4) + 's' : '—';
+    const hname = (s.hostname && s.hostname !== ip) ? s.hostname : '—';
+
+    // ── ASSOCIATION & TRUST LOGIC ──────────────────────────────────
+    const isTrusted = s.trusted || false;
+    const isLocal   = ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('127.');
+    let trustHtml   = '';
+
+    if (isTrusted) {
+      trustHtml = `
+        <div class="flex flex-col">
+          <span class="text-[10px] text-emerald-400 font-bold uppercase tracking-tighter">✓ Trusted</span>
+          <div class="text-[9px] text-slate-500 truncate max-w-[100px]" title="${esc(s.trust_label)}">${esc(s.trust_label || 'Whitelisted')}</div>
+        </div>`;
+    } else if (isLocal) {
+      trustHtml = `
+        <div class="flex flex-col">
+          <span class="text-[10px] text-blue-400 font-bold uppercase tracking-tighter">🏠 Internal</span>
+          <div class="text-[9px] text-slate-500">Local Asset</div>
+        </div>`;
+    } else {
+      trustHtml = `
+        <div class="flex flex-col">
+          <span class="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">🌐 External</span>
+          <div class="text-[9px] text-slate-600 italic">Unverified</div>
+        </div>`;
     }
 
-  } catch(e) {
-    console.warn('[Alerts] Fetch error:', e);
-  }
-}
+    // Full AI verdict shown here
+    let aiHtml = '<span class="text-slate-600 italic">Pending…</span>';
+    if (s.ai_verdict) {
+      const isRL = s.ai_verdict.includes('Rate Limited');
+      aiHtml = `<span class="${isRL ? 'text-amber-500 animate-pulse' : 'text-blue-300'} leading-relaxed">${esc(s.ai_verdict)}</span>`;
+    }
 
-// ── Training data save ────────────────────────────────────────────────────
-async function saveTraining(label) {
-  const btn  = event.target;
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
+    return `
+      <tr class="${hasF?'bg-red-950':''} border-b border-slate-800 transition-colors align-top">
+        <td class="px-3 py-2 font-bold text-cyan-300 whitespace-nowrap">${ip}</td>
+        <td class="px-3 py-2 text-slate-400 max-w-[160px]">
+          <div class="truncate" title="${esc(hname)}">${esc(hname)}</div>
+        </td>
+        <td class="px-3 py-2">${protoBadge(s.protocol)}</td>
+        <td class="px-3 py-2 text-right text-emerald-400">${s.in}</td>
+        <td class="px-3 py-2 text-right text-orange-400">${s.out}</td>
+        <td class="px-3 py-2 text-right font-bold ${(s.kb_per_sec||0)>800?'text-red-400':'text-white'}">${s.kb_per_sec||0}</td>
+        
+        <td class="px-3 py-2">${trustHtml}</td>
+
+        <td class="px-3 py-2">${renderFlags(s.flags)}</td>
+        <td class="px-3 py-2 text-[11px]" style="min-width:260px;max-width:360px;">${aiHtml}</td>
+      </tr>`;
+  }).join('');
+}
+// ── Alert fetch ────────────────────────────────────────────────────────────
+async function fetchAlerts() {
   try {
-    const res  = await fetch(`/api/save_training/${label}`);
-    const json = await res.json();
-    btn.textContent = `✓ Saved ${json.logged_nodes} rows`;
-    setTimeout(() => {
-      btn.disabled    = false;
-      btn.textContent = label ? '☠️ Log Attack' : '✅ Log Normal';
-    }, 2500);
+    const alerts = await (await fetch('/api/alerts')).json();
+    displayedAlerts = alerts;
+    document.getElementById('sidebar-badge').textContent = alerts.length;
+    document.getElementById('card-alerts').textContent   = alerts.length;
+    if (alerts.length !== lastAlertCount) {
+      lastAlertCount = alerts.length;
+      if (cleared && alerts.length > 0) cleared = false;
+      renderAlerts(alerts);
+    }
+  } catch(e) { console.warn('[Alerts]', e); }
+}
+
+// ── Training save ──────────────────────────────────────────────────────────
+async function saveTraining(label) {
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const j = await (await fetch(`/api/save_training/${label}`)).json();
+    btn.textContent = `✓ ${j.logged_nodes} rows saved`;
+    setTimeout(() => { btn.disabled=false; btn.textContent=label?'☠️ Log Attack':'✅ Log Normal'; }, 2500);
+  } catch(e) { btn.textContent='Error'; btn.disabled=false; }
+}
+
+// ── Settings / Config ──────────────────────────────────────────────────────
+function updateSliderLabel(sliderId, labelId, suffix) {
+  const val = document.getElementById(sliderId).value;
+  document.getElementById(labelId).textContent = val + suffix;
+}
+
+async function loadConfigFromServer() {
+  try {
+    const cfg = await (await fetch('/api/config')).json();
+    // Sync slider positions
+    document.getElementById('sl-flood').value = cfg.flood_kb;
+    document.getElementById('sl-ai').value    = cfg.ai_packets;
+    document.getElementById('sl-iat').value   = Math.round(cfg.iat_sens * 1000);
+    // Sync labels
+    document.getElementById('val-flood').textContent = cfg.flood_kb   + ' KB/s';
+    document.getElementById('val-ai').textContent    = cfg.ai_packets + ' pkts';
+    document.getElementById('val-iat').textContent   = Math.round(cfg.iat_sens * 1000) + ' ms';
+    // Live readout
+    updateLiveReadout(cfg);
+  } catch(e) { console.warn('[Config]', e); }
+}
+
+function updateLiveReadout(cfg) {
+  document.getElementById('live-flood').textContent = cfg.flood_kb   + ' KB/s';
+  document.getElementById('live-ai').textContent    = cfg.ai_packets + ' pkts';
+  document.getElementById('live-iat').textContent   = Math.round(cfg.iat_sens * 1000) + ' ms';
+}
+
+async function applyConfig() {
+  const flood_kb   = parseFloat(document.getElementById('sl-flood').value);
+  const ai_packets = parseInt(document.getElementById('sl-ai').value);
+  const iat_ms     = parseFloat(document.getElementById('sl-iat').value);
+  const iat_sens   = iat_ms / 1000;   // convert ms back to seconds for backend
+
+  const statusEl = document.getElementById('config-status');
+  statusEl.textContent = 'Applying…';
+  statusEl.className   = 'text-xs text-slate-500';
+
+  try {
+    const res = await fetch('/api/update_config', {
+      method:  'POST',
+      headers: {'Content-Type':'application/json'},
+      body:    JSON.stringify({ flood_kb, ai_packets, iat_sens }),
+    });
+    const j = await res.json();
+
+    if (j.status === 'ok') {
+      statusEl.textContent = `✓ Applied ${Object.keys(j.applied).length} parameter(s) at ${new Date().toLocaleTimeString()}`;
+      statusEl.className   = 'text-xs text-emerald-400';
+      updateLiveReadout(j.current);
+    } else {
+      throw new Error('Backend returned non-ok');
+    }
   } catch(e) {
-    btn.textContent = 'Error';
-    btn.disabled = false;
+    statusEl.textContent = '✗ Apply failed — check console';
+    statusEl.className   = 'text-xs text-red-400';
   }
 }
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+// Ensure tab-soc starts as flex (not block)
+document.getElementById('tab-soc').classList.add('flex');
+
 fetchStats();
 fetchAlerts();
 setInterval(fetchStats,  2000);
-setTimeout(() => setInterval(fetchAlerts, 2000), 1000); // offset by 1s
+setTimeout(() => setInterval(fetchAlerts, 2000), 1000);
 </script>
-
 </body>
 </html>
